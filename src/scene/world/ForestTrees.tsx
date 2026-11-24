@@ -53,38 +53,44 @@ const RECTS = {
 
 /** The far bank and the valley walls — the forest that closes the view. */
 const PINE_GROUND: Box[] = [
-  { x: [-60, 60], z: [-92, -62], weight: 2.4 },
-  { x: [-52, 52], z: [-44, -28], weight: 3.2 },
-  { x: [22, 58], z: [-28, 16], weight: 1.6 },
-  { x: [-58, -22], z: [-28, 16], weight: 1.6 },
+  // the clearing's corridor: a wall of tall pines left and right of the star
+  { x: [-52, -11], z: [-40, 70], weight: 4.2 },
+  { x: [11, 52], z: [-40, 70], weight: 4.2 },
+  // the wooded sides of the meadow
+  { x: [-120, -46], z: [-16, 60], weight: 1.4 },
+  { x: [46, 120], z: [-16, 60], weight: 1.4 },
+  // the ridge behind the forest
+  { x: [-90, 90], z: [88, 130], weight: 1.2 },
 ]
 
 const BIRCH_GROUND: Box[] = [
-  { x: [-40, 40], z: [-42, -28], weight: 2.6 },
-  { x: [13, 44], z: [15, 50], weight: 1 },
-  { x: [-44, -13], z: [15, 50], weight: 1 },
+  // silver birches stand at the corridor's edge, closest to the lens
+  { x: [-24, -11], z: [-36, 56], weight: 3.0 },
+  { x: [11, 24], z: [-36, 56], weight: 3.0 },
+  { x: [30, 52], z: [10, 44], weight: 1 },
+  { x: [-52, -30], z: [10, 44], weight: 1 },
 ]
 
 const OAK_GROUND: Box[] = [
-  { x: [-72, 72], z: [-112, -78], weight: 3 },
-  { x: [40, 78], z: [-44, 12], weight: 1 },
-  { x: [-78, -40], z: [-44, 12], weight: 1 },
+  { x: [-110, -30], z: [6, 80], weight: 1.8 },
+  { x: [30, 110], z: [6, 80], weight: 1.8 },
+  { x: [-72, 72], z: [80, 120], weight: 1.4 },
 ]
 
 const HAZEL_GROUND: Box[] = [
-  { x: [21, 52], z: [-34, 16], weight: 1.6 },
-  { x: [-52, -21], z: [-34, 16], weight: 1.6 },
-  { x: [-52, 52], z: [-56, -33], weight: 2.2 },
-  { x: [-40, 40], z: [-33, -27], weight: 2.2 },
+  { x: [12, 44], z: [18, 76], weight: 2.4 },
+  { x: [-44, -12], z: [18, 76], weight: 2.4 },
+  { x: [-46, 46], z: [-18, -10], weight: 1.4 },
+  { x: [-80, 80], z: [40, 90], weight: 1.2 },
 ]
 
 /** Willows are hand-placed: each one has to reach the water from the bank. */
 const WILLOW_SPOTS: Array<[number, number]> = [
-  [-15, -27.4],
-  [-1.5, -27.9],
-  [13, -27.2],
-  [-26, 3.5],
-  [27, -2],
+  [-13.5, -18.5],
+  [-2.5, -19.6],
+  [11.5, -18.8],
+  [-17, 2.5],
+  [18, -2.5],
 ]
 
 /* ------------------------------- helpers -------------------------------- */
@@ -116,7 +122,7 @@ function buildPines(ctx: TreeCtx, spots: Spot[]): { wood: Geo; needles: Geo } {
   const rnd = ctx.rnd
 
   for (const spot of spots) {
-    const h = range(rnd, 12, 27)
+    const h = range(rnd, 10, 22)
     const r0 = range(rnd, 0.28, 0.62)
     const seed = rnd() * 6.28
     const points = spine(
@@ -151,15 +157,15 @@ function buildPines(ctx: TreeCtx, spots: Spot[]): { wood: Geo; needles: Geo } {
 
     // needle shelves: flat twig plates at different heights (a pagoda, not a cone)
     const crownBase = 0.34
-    const crownR = range(rnd, 3.2, 4.8)
-    const shelves = 4 + Math.floor(rnd() * 2)
+    const crownR = range(rnd, 4.6, 7.2)
+    const shelves = 6 + Math.floor(rnd() * 2)
     for (let s = 0; s < shelves; s++) {
       const t = crownBase + (s / (shelves - 1)) * (0.99 - crownBase)
       const idx = Math.min(points.length - 1, Math.round(t * (points.length - 1)))
       const centre = points[idx]
       const curve = Math.min(1, Math.max(0.06, (t - crownBase + 0.1) / (1 - crownBase)))
       const spread = crownR * Math.sin(Math.PI * Math.pow(curve, 0.72))
-      const twigs = 12 + Math.floor(rnd() * 5)
+      const twigs = 22 + Math.floor(rnd() * 8)
       for (let i = 0; i < twigs; i++) {
         const a = (i / twigs) * Math.PI * 2 + s * 1.1 + rnd() * 0.35
         const outward = S(Math.cos(a), 0, Math.sin(a))
@@ -167,16 +173,19 @@ function buildPines(ctx: TreeCtx, spots: Spot[]): { wood: Geo; needles: Geo } {
         const len = spread * range(rnd, 0.85, 1.35)
         // a twig stands at 45–70° so the crown has volume from every angle,
         // not just from above (a flat shelf disappears when seen edge-on)
-        const tilt = range(rnd, 0.12, 0.5)
+        const tilt = range(rnd, -0.35, 0.75)
         const up = outward.clone().multiplyScalar(Math.cos(tilt)).addScaledVector(UP, Math.sin(tilt)).normalize()
         const side = tangent.clone().applyAxisAngle(outward, range(rnd, -0.5, 0.5))
         needles.windFor(0.85 + t * 0.15, seed + i * 0.7)
         needles.leaf({
-          centre: centre.clone().addScaledVector(outward, len * 0.42).add(S(0, 0.05, 0)),
+          centre: centre
+            .clone()
+            .addScaledVector(outward, len * 0.42)
+            .add(S(0, range(rnd, -1.6, 1.8) + 0.05, 0)),
           right: side,
           up,
-          width: len * 2.1,
-          height: len * 1.0,
+          width: len * 1.18,
+          height: len * 0.86,
           rect: RECTS.pine,
           top: color('#D6DFC0'),
           bottom: color('#93A07F'),
@@ -242,19 +251,19 @@ function buildBirches(ctx: TreeCtx, spots: Spot[]): { wood: Geo; leaves: Geo } {
 
     // canopy: drooping sprays of individual leaves, read as a haze not a mass
     const crownCentre = main[Math.round(0.82 * (main.length - 1))]
-    const sprays = 10
+    const sprays = 18
     for (let sb = 0; sb < sprays; sb++) {
       const a = (sb / sprays) * Math.PI * 2 + rnd() * 0.6
       const outward = S(Math.cos(a), 0, Math.sin(a))
       const reach = range(rnd, 1.0, 2.6)
       const anchor = crownCentre.clone().addScaledVector(outward, reach * 0.5).add(S(0, range(rnd, -0.6, 0.9), 0))
-      const leafCount = 7
+      const leafCount = 9
       for (let l = 0; l < leafCount; l++) {
         const t = l / (leafCount - 1)
         const drift = outward.clone().multiplyScalar(reach * (0.35 + t * 0.7))
         const droop = -t * range(rnd, 0.7, 1.3)
         const leafCentre = anchor.clone().add(drift).add(S(0, droop, 0)).addScaledVector(outward, range(rnd, -0.2, 0.2))
-        const size = range(rnd, 0.3, 0.52)
+        const size = range(rnd, 0.42, 0.72)
         const yaw = a + range(rnd, -0.9, 0.9)
         leaves.windFor(0.55 + t * 0.4, seed + sb * 0.9 + l)
         leaves.leaf({
@@ -312,7 +321,7 @@ function buildOaks(ctx: TreeCtx, spots: Spot[]): { wood: Geo; leaves: Geo } {
     const spreadY = range(rnd, 5, 7)
     // clusters of real leaves, not one giant leaf: an oak crown is a mass of
     // 10 cm leaves, and at 40 m that reads as weight rather than a sticker
-    const clusters = 24
+    const clusters = 44
     for (let i = 0; i < clusters; i++) {
       const a = rnd() * Math.PI * 2
       const rr = Math.pow(rnd(), 0.55)
@@ -324,7 +333,7 @@ function buildOaks(ctx: TreeCtx, spots: Spot[]): { wood: Geo; leaves: Geo } {
         const la = rnd() * Math.PI * 2
         const lr = Math.pow(rnd(), 0.6) * 1.25
         const yaw = la + range(rnd, -0.4, 0.4)
-        const size = range(rnd, 0.5, 0.85)
+        const size = range(rnd, 0.72, 1.15)
         leaves.windFor(0.3, seed + i + k)
         leaves.leaf({
           centre: S(cx + Math.cos(la) * lr, cy + range(rnd, -0.5, 0.6), cz + Math.sin(la) * lr),
@@ -398,8 +407,32 @@ function buildWillows(ctx: TreeCtx, spots: Array<[number, number]>): { wood: Geo
       })
     }
 
+    // the crown itself: overlapping leaf cards in a flattened dome, so the willow is never a bare fork
+    const crownLeaves = 210
+    for (let i = 0; i < crownLeaves; i++) {
+      const a = rnd() * Math.PI * 2
+      const rr = Math.pow(rnd(), 0.55)
+      const ring = 0.8 + rr * 4.6
+      const lx = crown.x + Math.cos(a) * ring
+      const lz = crown.z + Math.sin(a) * ring * 0.9
+      const ly = crown.y + range(rnd, -1.6, 2.6) * (1.0 - rr * 0.35)
+      const yaw = a + range(rnd, -1.1, 1.1)
+      const size = range(rnd, 0.42, 0.8)
+      strands.windFor(0.35 + rr * 0.4, seed + i)
+      strands.leaf({
+        centre: S(lx, ly, lz),
+        right: S(Math.cos(yaw + Math.PI / 2), 0, Math.sin(yaw + Math.PI / 2)),
+        up: S(Math.cos(yaw), -0.5, Math.sin(yaw)).normalize(),
+        width: size * 1.05,
+        height: size * 2.1,
+        rect: i % 3 === 0 ? RECTS.leafF : i % 3 === 1 ? RECTS.leafA : RECTS.leafC,
+        top: color('#C8D69C'),
+        bottom: color('#8FA36F'),
+      })
+    }
+
     // the curtain: hanging strands, denser toward the outside, some reaching the water
-    const strandCount = 64
+    const strandCount = 84
     const lit = P('willowStrand')
     const dark = P('willowStrandShade')
     for (let s = 0; s < strandCount; s++) {
@@ -569,21 +602,33 @@ export function ForestTrees({ uniforms, tier }: { uniforms: WorldUniforms; tier:
     const high = tier !== 'low'
     const pines = buildPines(
       { rnd },
-      scatter(rnd, high ? 42 : 22, PINE_GROUND, treeLand, { sightline: 5 }),
+      scatter(rnd, high ? 120 : 56, PINE_GROUND, treeLand, { sightline: 5 }),
     )
     const birches = buildBirches(
       { rnd },
-      scatter(rnd, high ? 11 : 6, BIRCH_GROUND, treeLand, { sightline: 4.5 }),
+      scatter(rnd, high ? 34 : 14, BIRCH_GROUND, treeLand, { sightline: 4.5 }),
     )
     const oaks = buildOaks(
       { rnd },
-      scatter(rnd, high ? 8 : 5, OAK_GROUND, treeLand, { sightline: 14 }),
+      scatter(rnd, high ? 26 : 10, OAK_GROUND, treeLand, { sightline: 14 }),
     )
     const willows = buildWillows({ rnd }, WILLOW_SPOTS.slice(0, high ? 5 : 3))
     const hazel = buildHazel(
       { rnd },
-      scatter(rnd, high ? 34 : 16, HAZEL_GROUND, treeLand, { sightline: 3.5 }),
+      scatter(rnd, high ? 90 : 34, HAZEL_GROUND, treeLand, { sightline: 3.5 }),
     )
+    // eslint-disable-next-line no-console
+    console.log('[forest]', {
+      pines: pines.wood.triangleCount,
+      needles: pines.needles.triangleCount,
+      birch: birches.wood.triangleCount,
+      birchLeaves: birches.leaves.triangleCount,
+      oak: oaks.wood.triangleCount,
+      oakLeaves: oaks.leaves.triangleCount,
+      willow: willows.wood.triangleCount,
+      strands: willows.strands.triangleCount,
+      hazel: hazel.wood.triangleCount,
+    })
     return { pines, birches, oaks, willows, hazel }
   }, [tier])
 
@@ -594,9 +639,9 @@ export function ForestTrees({ uniforms, tier }: { uniforms: WorldUniforms; tier:
       plainBark: createBarkMaterial({ uniforms, mode: 2 }),
       pineNeedles: createFoliageMaterial({
         uniforms,
-        translucency: 0.35,
+        translucency: 0.55,
         swayAmount: 0.24,
-        tint: color('#9BAE83'),
+        tint: color('#B4C79A'),
         depthShade: 0.14,
       }),
       birchLeaves: createFoliageMaterial({

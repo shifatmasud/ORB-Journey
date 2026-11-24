@@ -5,7 +5,10 @@ import { AirWaterSplit, WaterlineSolver } from './AirWaterSplit'
 import { createCausticUniforms } from './caustics'
 import { KelpForest, type KelpOptions } from './KelpForest'
 import { LakeWater, createLake, createWaterlineUniforms, type LakeConfig, type LakePalette } from './LakeWater'
+import { LAKE_LEVEL } from '../world/Terrain'
 import { WaterTrailFBO } from './WaterTrailFBO'
+import { WaterFX, DeepBubbles } from './WaterFX'
+import { Seabed } from './Seabed'
 
 /**
  * Stream 3 in one component: lake surface, hover/scrub trails, the air–water
@@ -61,9 +64,9 @@ export function WaterBeat({
   const trail = useMemo(
     () =>
       new WaterTrailFBO(gl, {
-        center: lake.config.center,
-        extent: Math.min(lake.config.size, 64),
-        resolution: tier === 'low' ? 128 : 256,
+        center: [0, -300],
+        extent: 240,
+        resolution: tier === 'low' ? 192 : 384,
       }),
     [gl, lake, tier],
   )
@@ -77,7 +80,7 @@ export function WaterBeat({
 
   return (
     <>
-      <KelpForest lake={lake} options={kelp} caustics={caustics} sunDir={sunDir} />
+      <KelpForest lake={lake} options={kelp ?? { center: [0, -404], radius: 30, count: 40, height: 10 }} caustics={caustics} sunDir={sunDir} />
       <LakeWater
         lake={lake}
         waterline={waterline}
@@ -89,6 +92,9 @@ export function WaterBeat({
         sunDir={sunDir}
       />
       <AirWaterSplit lake={lake} solver={solver} caustics={caustics} sunDir={sunDir} />
+      <Seabed />
+      <WaterFX lake={lake} orbRef={orbRef} />
+      <DeepBubbles center={[0, LAKE_LEVEL - 7.4, -404]} />
     </>
   )
 }

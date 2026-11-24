@@ -57,18 +57,16 @@ float trailHeight(vec2 xz) {
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 0.0;
   return texture(uTrail, uv).r * trailMask(uv);
 }
-/* Slope in metres per metre, matching the direction convention of a normal
-   built as (-dh/dx, 1, -dh/dz). Gain pushes 1-3 cm rings into the lighting —
-   real ripples are drowned by the swell if lit at their true height. */
+/* Slope in metres per metre, reconstructed by the sim itself: the field stores its own gradient in
+   B (d/dx) and A (d/dz), so the surface reads a *continuous* gradient instead of differencing a
+   bilinear height (which is what printed the texel steps). */
 vec2 trailSlope(vec2 xz) {
   vec2 uv = trailUV(xz);
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return vec2(0.0);
   float m = trailMask(uv);
   if (m <= 0.0) return vec2(0.0);
-  float e = uTrailBox.w / uTrailBox.z;
-  float hx = texture(uTrail, uv + vec2(e, 0.0)).r - texture(uTrail, uv - vec2(e, 0.0)).r;
-  float hz = texture(uTrail, uv + vec2(0.0, e)).r - texture(uTrail, uv - vec2(0.0, e)).r;
-  return vec2(hx, hz) * (m * uTrailGain / (2.0 * uTrailBox.w));
+  vec2 g = texture(uTrail, uv).ba;
+  return vec2(g.x, g.y) * m * uTrailGain;
 }
 `
 
@@ -98,6 +96,7 @@ uniform vec4 u_drops[4];         // xy uv, z radius (uv), w amount
 uniform float u_damping;
 uniform float u_k;
 uniform float u_hdecay;
+uniform float u_worldTexel;
 
 layout(location = 0) out vec4 fragColor;
 
@@ -114,10 +113,19 @@ void main() {
   float s = texture(u_prev, vUv - vec2(0.0, u_texel.y)).r;
   float e = texture(u_prev, vUv + vec2(u_texel.x, 0.0)).r;
   float w = texture(u_prev, vUv - vec2(u_texel.x, 0.0)).r;
-  v += ((n + s + e + w) * 0.25 - h) * u_k;
+  float ne = texture(u_prev, vUv + vec2(u_texel.x, u_texel.y)).r;
+  float nw = texture(u_prev, vUv + vec2(-u_texel.x, u_texel.y)).r;
+  float se = texture(u_prev, vUv + vec2(u_texel.x, -u_texel.y)).r;
+  float sw = texture(u_prev, vUv + vec2(-u_texel.x, -u_texel.y)).r;
+
+  // isotropic 9-point Laplacian: a 5-point stencil sends waves faster along the axes than the
+  // diagonals, which is exactly what turned a ring into an octagon
+  float lap = (4.0 * (n + s + e + w) + (ne + nw + se + sw) - 20.0 * h) / 6.0;
+  v += lap * u_k;
   v *= u_damping;
   h += v;
   h *= u_hdecay;
+  h = clamp(h, -0.22, 0.22);
 
   // pointer stroke: swept capsule from last tick's point to this one
   vec2 cap = capsule(vUv, u_from.xy, u_to.xy);
@@ -134,7 +142,11 @@ void main() {
   // sponge border: waves die before the edge, nothing reflects back
   float sb = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
   float edge = smoothstep(0.0, 0.05, sb);
-  fragColor = vec4(h * edge, v * edge, 0.0, 1.0);
+
+  // the field carries its own gradient (metres of height per metre of water), written once here
+  float dx = (e - w) / (2.0 * u_worldTexel);
+  float dz = (n - s) / (2.0 * u_worldTexel);
+  fragColor = vec4(h * edge, v * edge, dx * edge, dz * edge);
 }
 `
 
@@ -146,7 +158,7 @@ export class WaterTrailFBO {
   readonly center: THREE.Vector2
   readonly box: THREE.Vector4
   /** slope multiplier read by every material's `trailSlope()` */
-  readonly gain = 1.5
+  readonly gain = 1.15
 
   private renderer: THREE.WebGLRenderer
   private targets: [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget]
@@ -198,7 +210,8 @@ export class WaterTrailFBO {
     this.box = new THREE.Vector4(this.center.x, this.center.y, this.extent, this.extent / this.resolution)
 
     // equal world wave speed at any resolution: k scales with (dx)^2 (RippleSim)
-    const k = Math.pow(1 / (this.resolution / 512), 2)
+    // the 9-point Laplacian is ~3.3x the 5-point one at a unit impulse: keep the same wave speed
+    const k = Math.pow(1 / (this.resolution / 512), 2) * 0.32
     this.material = new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
       vertexShader: SIM_VERT,
@@ -211,7 +224,8 @@ export class WaterTrailFBO {
         u_drops: { value: [0, 1, 2, 3].map(() => new THREE.Vector4()) },
         u_damping: { value: 0.988 },
         u_k: { value: k },
-        u_hdecay: { value: 0.998 },
+        u_hdecay: { value: 0.995 },
+        u_worldTexel: { value: this.extent / this.resolution },
       },
       depthTest: false,
       depthWrite: false,

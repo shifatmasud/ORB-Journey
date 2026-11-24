@@ -599,29 +599,29 @@ const toPlace = (s: { x: number; z: number; y: number }, rnd: () => number): Pla
 })
 
 /** The far bank, the banks either side of the pool, the near meadow, the wood. */
-const FAR_BANK: Box[] = [{ x: [-52, 52], z: [-52, -27], weight: 3 }]
-const NEAR_MEADOW: Box[] = [{ x: [-52, 52], z: [16, 52], weight: 1 }]
+const FAR_BANK: Box[] = [{ x: [-46, 46], z: [-22, -6], weight: 3 }]
+const NEAR_MEADOW: Box[] = [{ x: [-52, 52], z: [12, 60], weight: 3 }]
 const BANKS: Box[] = [
-  { x: [20, 50], z: [-26, 15], weight: 1 },
-  { x: [-50, -20], z: [-26, 15], weight: 1 },
+  { x: [11, 46], z: [-20, 16], weight: 1.2 },
+  { x: [-46, -11], z: [-20, 16], weight: 1.2 },
 ]
 const WOODLAND: Box[] = [
-  { x: [22, 56], z: [-44, 14], weight: 1 },
-  { x: [-56, -22], z: [-44, 14], weight: 1 },
-  { x: [-52, 52], z: [-72, -46], weight: 1 },
+  { x: [18, 54], z: [18, 64], weight: 1 },
+  { x: [-54, -18], z: [18, 64], weight: 1 },
+  { x: [-60, 60], z: [18, 56], weight: 1 },
 ]
-const LAKE_MARGIN: Box[] = [{ x: [-52, 52], z: [-36, 16], weight: 1 }]
+const LAKE_MARGIN: Box[] = [{ x: [-40, 40], z: [-20, 10], weight: 1 }]
 
 /** Reeds pinned just off the lens, at the frame's lower corners. */
 const FOREGROUND_REEDS: Array<[number, number]> = [
-  [-7.5, 6.5],
-  [-6.2, 3.8],
-  [-4.8, 8.6],
-  [7.2, 5.2],
-  [8.6, 8.2],
-  [5.6, 2.6],
-  [-9.4, 1.5],
-  [9.8, 0.8],
+  [-5.4, 8.5],
+  [-4.2, 11.0],
+  [-3.0, 7.0],
+  [5.0, 9.5],
+  [6.2, 6.2],
+  [3.6, 11.5],
+  [-6.8, 5.0],
+  [7.4, 3.4],
 ]
 
 /** A drift: real meadow flowers arrive in colonies, not a uniform sprinkle. */

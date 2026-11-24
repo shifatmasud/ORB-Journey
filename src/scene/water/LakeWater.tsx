@@ -9,6 +9,7 @@ import {
   type CausticUniforms,
 } from './caustics'
 import { TRAIL_GLSL, WaterTrailFBO } from './WaterTrailFBO'
+import { journey } from '../atmosphere/atmosphereState'
 
 /**
  * LakeWater — the surface of the lake.
@@ -131,6 +132,8 @@ export type LakeConfig = {
   basinRadius?: number
   /** 0 = glass, 1 = the shipped calm swell */
   swell?: number
+  /** edge length of the bed-depth texture's square (defaults to the sheet's size) */
+  bedSize?: number
   /** camera height above the surface where the split view ends (m) */
   splitOut?: number
 }
@@ -161,6 +164,7 @@ export function createLake(config: LakeConfig = {}): Lake {
   const basinRadius = config.basinRadius ?? 52
   const swell = config.swell ?? 1
   const splitOut = config.splitOut ?? 0.9
+  const bedSize = config.bedSize ?? size
   const bedAt =
     config.bedAt ??
     ((x: number, z: number) => {
@@ -201,7 +205,7 @@ export function createLake(config: LakeConfig = {}): Lake {
   }
 
   return {
-    config: { level, center, size, detail, depth, basinRadius, swell, splitOut, bedAt },
+    config: { level, center, size, detail, depth, basinRadius, swell, splitOut, bedAt, bedSize },
     heightAt,
     surfaceAt,
     bedDepth: (x, z) => Math.max(0, level - bedAt(x, z)),
@@ -360,7 +364,7 @@ void main() {
     float wc = max(0.24, 3.0 * fwidth(s2c));
     float crit = smoothstep(0.87 - wc, 0.87 + wc, s2c);
 
-    vec3 under = mix(uDeep, uShallow, 0.34 + 0.40 * pow(max(dot(-dn, view), 0.0), 2.0));
+    vec3 under = mix(uDeep * 0.72, uShallow, 0.30 + 0.44 * pow(max(dot(-dn, view), 0.0), 2.0));
     float shimmer = causticDapple(vWorld.xz);
     under *= 1.0 + (shimmer - 0.45) * 0.16 * uUnderBlend;
 
@@ -385,9 +389,13 @@ void main() {
   vec3 refl = skyColor(r);
   // horizon glare: real water at a grazing angle is a bright silver sheet, and
   // a lake at dawn is exactly that under the far bank
-  refl += uSkyHorizon * 0.55 * pow(1.0 - clamp(r.y, 0.0, 1.0), 6.0);
+  refl += uSkyHorizon * 0.16 * pow(1.0 - clamp(r.y, 0.0, 1.0), 6.0);
   // and a second, wider glare so the near half of a low view is silver too
-  refl += uSkyHorizon * 0.22 * pow(1.0 - clamp(ci, 0.0, 1.0), 2.0);
+  refl += uSkyHorizon * 0.05 * pow(1.0 - clamp(ci, 0.0, 1.0), 2.0);
+  // the far shore's tree line: the band just above the waterline reflects land, not sky
+  float treeBand = smoothstep(-0.01, 0.16, r.y);
+  refl = mix(uShoreColor * 0.9, refl, treeBand);
+  refl *= mix(0.66, 1.0, smoothstep(0.02, 0.26, r.y));
   float fres = 1.0;
   {
     // exact unpolarised Fresnel, n_air 1.0 / n_water 1.333 (not Schlick)
@@ -401,8 +409,8 @@ void main() {
     }
   }
   // sun glitter: Blinn-Phong on the wave normal, a low-sun "golden road"
-  float sunSpec = pow(max(dot(r, normalize(uSunDir)), 0.0), 220.0) * 1.6
-                + pow(max(dot(r, normalize(uSunDir)), 0.0), 16.0) * 0.10;
+  float sunSpec = pow(max(dot(r, normalize(uSunDir)), 0.0), 220.0) * 3.4
+                + pow(max(dot(r, normalize(uSunDir)), 0.0), 16.0) * 0.07;
   refl += uSunColor * sunSpec;
 
   // the orb's own reflection: its mirror image in the surface, smeared by the
@@ -448,8 +456,8 @@ void main() {
      makes a low camera read the water as a dark sheet (it is 0.27 at 13 deg,
      and the eye expects a lake to be a mirror), so the artist's reflectance is
      the exact term pushed toward 1 at grazing. */
-  float schlick = pow(1.0 - clamp(ci, 0.0, 1.0), 4.0);
-  float fr = clamp(fres * 0.35 + schlick * 0.95 + 0.05, 0.0, 0.96);
+  float schlick = pow(1.0 - clamp(ci, 0.0, 1.0), 5.0);
+  float fr = clamp(fres * 0.30 + schlick * 0.92 + 0.04, 0.0, 0.95);
   vec3 col = mix(waterCol, refl, fr);
   if (uDbg > 3.5 && uDbg < 4.5) { fragColor = vec4(uwSrgb(refl), 1.0); return; }
   if (uDbg > 4.5 && uDbg < 5.5) { fragColor = vec4(vec3(fr), 1.0); return; }
@@ -496,8 +504,8 @@ export type LakeWaterHandles = {
   dispose: () => void
 }
 
-function bedTexture(lake: Lake, resolution = 160) {
-  const size = lake.config.size
+function bedTexture(lake: Lake, resolution = 200) {
+  const size = lake.config.bedSize
   const center = lake.config.center
   const maxDepth = Math.max(1, lake.config.depth * 1.6)
   const data = new Uint8Array(resolution * resolution * 4)
@@ -551,17 +559,17 @@ export function createLakeWater(
     uSpacing: { value: spacing },
     uSwell: { value: lake.config.swell },
     uCamPos: { value: new THREE.Vector3() },
-    uDeep: { value: paletteColor(options.palette?.deep, '#1b4550') },
-    uShallow: { value: paletteColor(options.palette?.shallow, '#4d9287') },
+    uDeep: { value: paletteColor(options.palette?.deep, '#0f3740') },
+    uShallow: { value: paletteColor(options.palette?.shallow, '#2f6a66') },
     uSkyHorizon: { value: paletteColor(options.palette?.skyHorizon, '#d9b98f') },
     uSkyZenith: { value: paletteColor(options.palette?.skyZenith, '#7f93b4') },
     uSunColor: { value: paletteColor(options.palette?.sun, '#ffe3b0') },
     uShoreColor: { value: paletteColor(options.palette?.shore, '#2a3a33') },
     uFoamColor: { value: new THREE.Color('#e8efe6') },
     uOrb: { value: new THREE.Vector4(0, 3, 0, 1) },
-    uOrbColor: { value: new THREE.Color('#b9a5ff') },
+    uOrbColor: { value: new THREE.Color('#ffcf8a') },
     uBedTex: { value: bedTex },
-    uBedBox: { value: new THREE.Vector4(lake.config.center[0], lake.config.center[1], lake.config.size, maxDepth) },
+    uBedBox: { value: new THREE.Vector4(lake.config.center[0], lake.config.center[1], lake.config.bedSize, maxDepth) },
     uUnderBlend: { value: 0 },
     uMicro: { value: 0 },
     uDbg: { value: 0 },
@@ -684,10 +692,13 @@ export function LakeWater({
   const hit = useMemo(() => new THREE.Vector3(), [])
   const ray = useMemo(() => new THREE.Raycaster(), [])
   const lastPointer = useRef(0)
+  const wakeAt = useRef(0)
 
   useFrame((state, delta) => {
     const t = state.clock.elapsedTime
     handles.update(t, camera)
+    // no water in the frame while the star is still above the weather
+    handles.mesh.visible = journey.u > 1.15
 
     // --- pointer: hover and touch-scrub both paint the same world-space wake
     if (trail) {
@@ -724,6 +735,15 @@ export function LakeWater({
         const bob = Math.sin(t * 1.7) * 0.006
         trail.splash(orbPos.x, orbPos.z, orbRadius * 1.15, -0.006 - bob * 0.4)
         bobAt.current = t
+      }
+      // the star's downwash: whenever it flies low over any water, the surface under its path answers
+      if (trail) {
+        const above = orbPos.y - surface
+        if (above < 3.6 && above > -1.0 && t - wakeAt.current > 0.07) {
+          wakeAt.current = t
+          const k = 1 - THREE.MathUtils.smoothstep(above, 0.0, 3.6)
+          trail.splash(orbPos.x, orbPos.z, 1.0 + orbRadius * 1.4, -0.0009 - 0.0022 * k)
+        }
       }
       lastOrb.current.copy(orbPos)
       ;(handles.uniforms.uOrb.value as THREE.Vector4).set(orbPos.x, orbPos.y, orbPos.z, 1)
