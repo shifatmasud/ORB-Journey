@@ -125,15 +125,15 @@ type Clump = { x: number; z: number; y: number; radius: number; height: number }
 
 /** Where the grass has to be: the ground the lens actually looks at. */
 const MEADOW_REGIONS: Box[] = [
-  // the far bank, 25–45 m out — the green the orb hangs over
-  { x: [-58, 58], z: [-40, -27], weight: 4.2 },
-  // the field behind it, seen from the clouds in beat 2
-  { x: [-58, 58], z: [-72, -46], weight: 1.7 },
-  // banks left and right of the pool
-  { x: [20, 58], z: [-27, 15], weight: 1.0 },
-  { x: [-58, -20], z: [-27, 15], weight: 1.0 },
-  // the near meadow, under the descending lens
-  { x: [-58, 58], z: [14, 56], weight: 2.4 },
+  // the lake's far rim — the green the star hangs over
+  { x: [-44, 44], z: [-22, -8], weight: 3.6 },
+  // the meadow the lens crosses, with the wildflower foreground
+  { x: [-52, 52], z: [10, 64], weight: 4.0 },
+  // banks left and right of the lake
+  { x: [10, 52], z: [-20, 14], weight: 1.4 },
+  { x: [-52, -10], z: [-20, 14], weight: 1.4 },
+  // inland, past the meadow
+  { x: [-90, 90], z: [62, 110], weight: 1.2 },
 ]
 
 function plantClumps(rnd: () => number, count: number, height: [number, number]): Clump[] {
@@ -152,7 +152,7 @@ function buildGrass(tier: Tier): BuiltGrass {
   const rnd = mulberry32(0x51f3a7)
   const high = tier !== 'low'
 
-  const clumps = plantClumps(rnd, high ? 2100 : 900, [0.75, 1.45])
+  const clumps = plantClumps(rnd, high ? 2500 : 900, [0.8, 1.5])
 
   const roots: number[] = []
   const data: number[] = []
@@ -161,7 +161,7 @@ function buildGrass(tier: Tier): BuiltGrass {
 
   for (const clump of clumps) {
     // tall tufts get more blades; that is what makes a meadow read as grass
-    const n = 7 + Math.floor(rnd() * 4)
+    const n = 10 + Math.floor(rnd() * 5)
     for (let b = 0; b < n; b++) {
       const ang = rnd() * Math.PI * 2
       const r = rnd() * clump.radius
@@ -240,7 +240,7 @@ function createBladeMaterial(uniforms: WorldUniforms): THREE.ShaderMaterial {
         vec2 bend = vec2(cos(aData.x + 1.2), sin(aData.x + 1.2)) * aTint.y;
         bend += gustField(aRoot.xz) * 0.5;
         bend += vec2(cos(phase), sin(phase)) * breath(phase) * 0.2;
-        bend += orbPush(aRoot, 3.6) * 1.15;
+        bend += orbPush(aRoot, 5.0) * 2.0;
 
         vec3 p = aRoot;
         p.y += h * (t - 0.28 * t * t * t);
@@ -287,6 +287,7 @@ function createBladeMaterial(uniforms: WorldUniforms): THREE.ShaderMaterial {
 
         col *= mix(0.84, 1.0, smoothstep(0.0, 0.22, vT));
 
+        col += orbGlow(vWorld, vBase) * (0.4 + 0.6 * vT);
         float dist = length(vWorld - cameraPosition);
         col = applyHaze(col, dist, 120.0, 340.0);
         fragColor = vec4(col, 1.0);
@@ -414,7 +415,7 @@ function tuftBase(): THREE.InstancedBufferGeometry {
 function buildTufts(tier: Tier, material: THREE.Material): THREE.InstancedMesh {
   const rnd = mulberry32(0x8c31d2)
   const high = tier !== 'low'
-  const spots = scatter(rnd, high ? 9000 : 3600, MEADOW_REGIONS, dryLand, { sightline: 1.0 })
+  const spots = scatter(rnd, high ? 13000 : 4200, MEADOW_REGIONS, dryLand, { sightline: 1.0 })
   const geo = tuftBase()
   const mesh = new THREE.InstancedMesh(geo, material, spots.length)
   const matrix = new THREE.Matrix4()
@@ -425,8 +426,8 @@ function buildTufts(tier: Tier, material: THREE.Material): THREE.InstancedMesh {
   spots.forEach((spot, i) => {
     pos.set(spot.x, spot.y - 0.04, spot.z)
     quat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rnd() * Math.PI * 2)
-    const h = range(rnd, 0.55, 1.15)
-    scl.set(range(rnd, 0.6, 1.05), h, 1)
+    const h = range(rnd, 0.7, 1.35)
+    scl.set(range(rnd, 0.8, 1.35), h, 1)
     matrix.compose(pos, quat, scl)
     mesh.setMatrixAt(i, matrix)
     varr[i * 2] = rnd() * Math.PI * 2
@@ -492,19 +493,26 @@ function createTuftMaterial(uniforms: WorldUniforms, texture: THREE.Texture): TH
       void main() {
         vec4 texel = texture(uTuft, vUv);
         // never show the quad's own edge: fade the card out at its rim
-        float edge = smoothstep(0.0, 0.14, vUv.x) * smoothstep(1.0, 0.86, vUv.x) * smoothstep(0.0, 0.1, vUv.y);
-        if (texel.a * edge < 0.5) discard;
-        vec3 col = texel.rgb * vBase * 2.1;
+        float edge = smoothstep(0.0, 0.12, vUv.x) * smoothstep(1.0, 0.88, vUv.x) * smoothstep(0.0, 0.08, vUv.y);
+        float dist = length(vWorld - cameraPosition);
+        // far tufts give up their thin blades first, so the field melts into the ground instead of sparkling
+        float far = smoothstep(26.0, 75.0, dist);
+        float cut = mix(0.42, 0.78, far);
+        if (texel.a * edge < cut) discard;
+
+        vec3 col = texel.rgb * vBase * 1.34;
         vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
         if (dot(n, cameraPosition - vWorld) < 0.0) n = -n;
-        col = mix(col, toonStep(col, n), 0.55);
+        // a tuft is a mass of blades, not a card: light it mostly as the ground it grows from
+        n = normalize(mix(n, vec3(0.0, 1.0, 0.0), 0.55));
+        col = toonStep(col, n);
 
         vec3 viewDir = normalize(vWorld - cameraPosition);
-        float back = pow(max(dot(viewDir, uSun), 0.0), 1.5);
-        col += uGrassRim * back * vUv.y * 0.3;
-
-        float dist = length(vWorld - cameraPosition);
-        col = applyHaze(col, dist, 120.0, 340.0);
+        float back = pow(max(dot(viewDir, uSun), 0.0), 1.4);
+        col += uGrassRim * back * vUv.y * 0.34;
+        // the tips catch the low sun
+        col *= mix(0.92, 1.12, smoothstep(0.2, 1.0, vUv.y));
+        col = applyHaze(col, dist, 90.0, 320.0);
         fragColor = vec4(col, 1.0);
       }
     `,

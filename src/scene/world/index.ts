@@ -31,14 +31,7 @@ export {
   TERRAIN_BOUNDS,
 } from './Terrain'
 
-export {
-  BEATS,
-  ORB_HOME,
-  cameraAt,
-  cameraTargetAt,
-  orbAt,
-  distanceToSightline,
-} from './path'
+export { STATIONS, ORB_CURVE, orbAt, tangentAt, stationAt } from './path'
 
 export { SUN_DIR, PALETTE, createWorldUniforms } from './shared'
 export type { Tier, ValueSource, WorldUniforms } from './shared'

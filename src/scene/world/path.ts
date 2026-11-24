@@ -1,103 +1,83 @@
 /**
- * The five beats as the app frames them.
+ * The journey's spine: where the star is, chapter by chapter, in world metres.
  *
- * The lens is owned by Stream 4's `CameraRig`; these are the same five poses,
- * written down in world metres so the world can be laid against them (and so a
- * future camera pass has one table to compare with). The orb itself sits at the
- * origin, hovering over the middle of the pool — the camera falls towards it and
- * finally under the surface to look back up at it.
+ * The star leads and the camera trails behind it — a third-person chase, not a crane over a set.
+ * Every station is a point on one continuous Catmull-Rom curve, so the star glides forward into
+ * depth (−z) through all eight biomes with no teleport and no straight vertical drop:
  *
- * Column: cloud base **y = 46**, ground **y = 0**, water line **y = −1.6**
- * (`LAKE_LEVEL`). Values match `src/scene/atmosphere/CameraRig.tsx` and
- * `src/scene/atmosphere/StageSlots.tsx`.
+ *   01 above the starry sky   y 185, z −5
+ *   02 the clouds             y  78, z −25
+ *   03 the forest             y 6.4, z  +6
+ *   04 the lake in the meadow y 3.0, z −26
+ *   05 the desert oasis       y 2.8, z −75
+ *   06 the Icelandic pond     y 2.6, z −150
+ *   07 the open sea           y 2.2, z −222
+ *   08 the deep floor         y −7.2, z −330
+ *
+ * The camera's distance behind each station is keyed too (`TRAIL`), so the star is a far light in
+ * the cosmos, a companion in the forest and a close subject over the water — always dead centre.
  */
 import * as THREE from 'three'
 
-export type Beat = {
-  /** 0..4 */
-  index: number
-  camera: [number, number, number]
-  target: [number, number, number]
+export type Station = {
+  orb: [number, number, number]
+  /** metres behind the star the lens trails */
+  trail: number
+  /** metres above the star the lens rides */
+  lift: number
   fov: number
-  name: string
+  /** camera bank through the curve, degrees */
+  roll: number
+  /** pointer parallax gain */
+  par: number
 }
 
-export const BEATS: readonly Beat[] = [
-  { index: 0, camera: [0, 64, 30], target: [0, 44, -12], fov: 42, name: 'sky' },
-  { index: 1, camera: [0.9, 30, 22], target: [0, 12, -9], fov: 45, name: 'meadow' },
-  { index: 2, camera: [1.7, 6.1, 15], target: [0, 0.3, -6], fov: 47, name: 'bank' },
-  { index: 3, camera: [0.5, 0.55, 11], target: [0, -1.3, -7], fov: 49, name: 'seam' },
-  { index: 4, camera: [0, -6.2, 9], target: [0, 4.2, -4], fov: 53, name: 'deep' },
-] as const
-
-/** The orb's home: over the middle of the pool, 1.6 m above the water line. */
-export const ORB_HOME = new THREE.Vector3(0, 0, 0)
-
-/** Point the lens sits at, `p` in 0..1 (Catmull-Rom through the five poses). */
-export function cameraAt(p: number): THREE.Vector3 {
-  return spline(p, (b) => b.camera)
-}
-
-/** Point the lens looks at. */
-export function cameraTargetAt(p: number): THREE.Vector3 {
-  return spline(p, (b) => b.target)
-}
-
-/** The orb sits at its home for the whole journey; kept as a function so a
- *  moving orb can be wired in without touching the world. */
-export function orbAt(_p: number): THREE.Vector3 {
-  return ORB_HOME.clone()
-}
-
-function spline(p: number, pick: (b: Beat) => [number, number, number]): THREE.Vector3 {
-  const pts = BEATS.map((b) => new THREE.Vector3(...pick(b)))
-  const clamped = Math.max(0, Math.min(1, p))
-  const scaled = clamped * (pts.length - 1)
-  const i = Math.min(pts.length - 2, Math.floor(scaled))
-  const t = scaled - i
-  const a = pts[Math.max(0, i - 1)]
-  const b = pts[i]
-  const c = pts[i + 1]
-  const d = pts[Math.min(pts.length - 1, i + 2)]
-  const t2 = t * t
-  const t3 = t2 * t
-  const out = new THREE.Vector3()
-  for (const key of ['x', 'y', 'z'] as const) {
-    out[key] =
-      0.5 *
-      (2 * b[key] +
-        (-a[key] + c[key]) * t +
-        (2 * a[key] - 5 * b[key] + 4 * c[key] - d[key]) * t2 +
-        (-a[key] + 3 * b[key] - 3 * c[key] + d[key]) * t3)
-  }
-  return out
-}
-
-/**
- * The vertical sightline the lens travels along, projected on the ground plane.
- * Plants are kept off this strip so nothing stands between the camera and the orb.
- */
-export const SIGHTLINE: Array<[number, number]> = [
-  [0, 22],
-  [0, 14],
-  [0, 4],
-  [0, -6],
-  [0, -20],
+export const STATIONS: Station[] = [
+  { orb: [0, 158, 60], trail: 30, lift: 11, fov: 38, roll: 0, par: 0.55 },
+  { orb: [0, 108, 40], trail: 26, lift: 7, fov: 43, roll: -1.2, par: 0.8 },
+  { orb: [0, 6.2, 30], trail: 15, lift: 2.6, fov: 47, roll: 1.4, par: 1.15 },
+  { orb: [0, 3.2, -24], trail: 17, lift: 2.0, fov: 49, roll: -0.9, par: 1.2 },
+  { orb: [0, 3.0, -108], trail: 15, lift: 1.8, fov: 50, roll: 1.1, par: 1.2 },
+  { orb: [0, 2.8, -205], trail: 15, lift: 1.6, fov: 50, roll: -1.0, par: 1.2 },
+  { orb: [0, 2.4, -300], trail: 15, lift: 2.2, fov: 50, roll: 1.2, par: 1.25 },
+  { orb: [0, -8.4, -420], trail: 13, lift: 2.4, fov: 55, roll: -0.6, par: 1.1 },
 ]
 
-/** Distance from a point to the sightline strip (metres, ground plane). */
-export function distanceToSightline(x: number, z: number): number {
-  let best = Infinity
-  for (let i = 0; i < SIGHTLINE.length - 1; i++) {
-    const [ax, az] = SIGHTLINE[i]
-    const [bx, bz] = SIGHTLINE[i + 1]
-    const dx = bx - ax
-    const dz = bz - az
-    const len = dx * dx + dz * dz
-    const t = len > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / len)) : 0
-    const px = ax + dx * t
-    const pz = az + dz * t
-    best = Math.min(best, Math.hypot(x - px, z - pz))
+export const ORB_CURVE = new THREE.CatmullRomCurve3(
+  STATIONS.map((s) => new THREE.Vector3(...s.orb)),
+  false,
+  'centripetal',
+  0.5,
+)
+
+export const LAST = STATIONS.length - 1
+
+const _p = new THREE.Vector3()
+const _t = new THREE.Vector3()
+
+/** The star's position at `p` (0..1). */
+export function orbAt(p: number, out: THREE.Vector3 = _p): THREE.Vector3 {
+  return ORB_CURVE.getPoint(Math.min(0.9999, Math.max(0, p)), out)
+}
+
+/** Unit tangent (the direction of travel) at `p`. */
+export function tangentAt(p: number, out: THREE.Vector3 = _t): THREE.Vector3 {
+  return ORB_CURVE.getTangent(Math.min(0.9999, Math.max(0, p)), out).normalize()
+}
+
+/** Interpolated station numbers (trail, lift, fov, roll, par) at `u` in station units. */
+export function stationAt(u: number) {
+  const clamped = Math.max(0, Math.min(LAST, u))
+  const i = Math.min(LAST - 1, Math.floor(clamped))
+  const f = clamped - i
+  const a = STATIONS[i]
+  const b = STATIONS[i + 1]
+  const mix = (x: number, y: number) => x + (y - x) * f
+  return {
+    trail: mix(a.trail, b.trail),
+    lift: mix(a.lift, b.lift),
+    fov: mix(a.fov, b.fov),
+    roll: (mix(a.roll, b.roll) * Math.PI) / 180,
+    par: mix(a.par, b.par),
   }
-  return best
 }

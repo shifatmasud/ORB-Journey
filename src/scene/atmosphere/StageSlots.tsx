@@ -4,6 +4,8 @@ import * as THREE from 'three'
 import type { MotionValue } from 'framer-motion'
 import { OrbScene, type OrbNumberRef, type OrbPointerRef } from '../orb'
 import { LAKE_LEVEL, World } from '../world'
+import { LAST, orbAt } from '../world/path'
+import { sampleTerrain } from '../world/Terrain'
 import { WaterBeat } from '../water'
 import { atmosphere } from './atmosphereState'
 import { TIER } from './quality'
@@ -55,39 +57,6 @@ export const orbObjectRef: { current: THREE.Object3D | null } = {
 /** Stable read-only view of the orb's world position (`World` bends grass around it). */
 const orbPosition = { get: () => stage.position }
 
-/**
- * Where the orb sits, per beat, measured *from the lens*: `d` metres along the
- * camera's own view ray, then `drop` metres straight down. Framing the orb
- * against the real lens (rather than a fixed world point) is what keeps it
- * composed while the camera cranes from y 92 to y -6.2 — the five numbers below
- * were checked against `CameraRig`'s spline at every beat.
- *
- *  01 sky      d 30   drop   0     a small light far ahead, dead centre
- *  02 meadow   d 20   drop   0     it falls with the lens, still centred
- *  03 bank     d 16   drop  -2.6   a third below centre, hanging over the pool
- *  04 seam     d 10.5 drop  -1.62  resting on the waterline (the lake bobs it)
- *  05 deep     d 10   drop   0     just under the surface, in the Snell window
- */
-const STAGE_KEYS = {
-  d: [30, 20, 16, 10.5, 10],
-  drop: [0, 0, -2.6, -1.62, 0],
-}
-
-/** Catmull-Rom through five keys at integer `u`, clamped at the ends (path.ts's formula). */
-function sampleKeys(keys: readonly number[], u: number): number {
-  const last = keys.length - 1
-  const clamped = Math.max(0, Math.min(last, u))
-  const i = Math.min(last - 1, Math.floor(clamped))
-  const t = clamped - i
-  const a = keys[Math.max(0, i - 1)]
-  const b = keys[i]
-  const c = keys[i + 1]
-  const d = keys[Math.min(last, i + 2)]
-  const t2 = t * t
-  const t3 = t2 * t
-  return 0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3)
-}
-
 const ORB_RADIUS = 0.62
 
 /**
@@ -104,11 +73,11 @@ const WATER_PALETTE = {
   skyHorizon: new THREE.Color('#c8ccd0'),
   skyZenith: new THREE.Color('#6d7f92'),
   sun: new THREE.Color('#ffe3b0'),
-  shore: new THREE.Color('#2a3a33'),
+  shore: new THREE.Color('#26332c'),
 }
 
 /** How much of the sky survives in the reflection (art direction, tuned visually). */
-const WATER_REFLECT = { horizon: 0.66, zenith: 0.62, sun: 0.9, shore: 0.95 }
+const WATER_REFLECT = { horizon: 0.58, zenith: 0.58, sun: 0.9, shore: 0.55 }
 
 function WaterSkySync() {
   useFrame(() => {
@@ -155,7 +124,6 @@ function usePointerRef(): OrbPointerRef {
 
 export function OrbSlot({ progress }: StageProps) {
   const group = useRef<THREE.Group>(null)
-  const camera = useThree((state) => state.camera)
   const aspect = useThree((state) => state.size.width / Math.max(1, state.size.height))
   const pointerRef = usePointerRef()
 
@@ -171,7 +139,6 @@ export function OrbSlot({ progress }: StageProps) {
   )
 
   const scale = stageScale(aspect)
-  const forward = useMemo(() => new THREE.Vector3(), [])
 
   useEffect(() => {
     stage.object = group.current
@@ -183,14 +150,21 @@ export function OrbSlot({ progress }: StageProps) {
   useFrame(() => {
     const node = group.current
     if (!node) return
-    const u = Math.min(4, Math.max(0, progress.get() * 4))
-    camera.getWorldDirection(forward)
-    stage.position
-      .copy(camera.position)
-      .addScaledVector(forward, sampleKeys(STAGE_KEYS.d, u))
-    stage.position.y += sampleKeys(STAGE_KEYS.drop, u)
+    const p = Math.min(1, Math.max(0, progress.get()))
+    const u = p * LAST
+    orbAt(p, stage.position)
+
+    // buoyancy: while the star skims the water it rides the swell and cants with it
+    const above = stage.position.y - LAKE_LEVEL
+    const wet = THREE.MathUtils.smoothstep(1.4, 0.4, Math.abs(above)) * (1 - THREE.MathUtils.smoothstep(1.0, -0.4, above)) 
+    const time = performance.now() / 1000
+    const bob = Math.sin(time * 2.2) * 0.05 + Math.sin(time * 1.27 + 1.4) * 0.026
+    stage.position.y += bob * wet
     node.position.copy(stage.position)
     node.scale.setScalar(scale)
+    node.rotation.z = Math.sin(time * 1.9 + 0.7) * 0.06 * wet
+    node.rotation.x = Math.cos(time * 1.55) * 0.045 * wet
+    node.rotation.y += (Math.sin(u * 0.9) * 0.06 - node.rotation.y) * 0.02
   })
 
   return (
@@ -215,7 +189,17 @@ export function WorldSlot({ progress }: StageProps) {
 export function WaterSlot(_props: StageProps) {
   const aspect = useThree((state) => state.size.width / Math.max(1, state.size.height))
   const lake = useMemo(
-    () => ({ level: LAKE_LEVEL, center: [0, 0] as [number, number], size: 180, depth: 7.5, basinRadius: 52 }),
+    () => ({
+      level: LAKE_LEVEL,
+      center: [0, -200] as [number, number],
+      size: 1600,
+      bedSize: 780,
+      maxBed: 0,
+      depth: 11,
+      basinRadius: 220,
+      detail: 256,
+      bedAt: (x: number, z: number) => sampleTerrain(x, z),
+    }),
     [],
   )
   return (

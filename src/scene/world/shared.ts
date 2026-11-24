@@ -41,20 +41,20 @@ export function readValue<T>(source: ValueSource<T> | undefined, fallback: T): T
 
 export const PALETTE = {
   // meadow / terrain
-  meadowLit: '#6E7A3E',
-  meadowMid: '#39471F',
-  meadowShade: '#232C1C',
-  litterLit: '#514B2C',
-  litterMid: '#35331F',
-  litterShade: '#25241A',
+  meadowLit: '#8a9a4c',
+  meadowMid: '#4f6129',
+  meadowShade: '#2c3820',
+  litterLit: '#5d5236',
+  litterMid: '#3d3a26',
+  litterShade: '#2a281c',
   sand: '#8B7B58',
   bedShallow: '#4A5138',
   bedDeep: '#242B22',
   // grass (REFERENCES §A.1 — three greens from the painted pine + one sun rim)
-  grassShade: '#1E2716',
-  grassMid: '#344327',
-  grassLit: '#5C7038',
-  grassRim: '#B9C97B',
+  grassShade: '#2b3a1e',
+  grassMid: '#4a5c2c',
+  grassLit: '#7b9440',
+  grassRim: '#d0dd8e',
   // flowers
   daisyRayLit: '#F7F3E8',
   daisyRayShade: '#CFCCBC',
@@ -129,6 +129,7 @@ export type WorldUniforms = {
   uHaze: { value: THREE.Color }
   uHazeStart: { value: number }
   uHazeEnd: { value: number }
+  uFog: { value: number }
   uTex: { value: THREE.Texture | null }
 }
 
@@ -150,32 +151,50 @@ export function createWorldUniforms(options: WorldUniformOptions = {}): WorldUni
     uHaze: { value: options.haze instanceof THREE.Color ? options.haze : color(options.haze ?? PALETTE.haze) },
     uHazeStart: { value: options.hazeStart ?? 70 },
     uHazeEnd: { value: options.hazeEnd ?? 320 },
+    uFog: { value: 1 },
     uTex: { value: null },
   }
 }
 
 /* ------------------------------ GLSL ------------------------------ */
 
-/** Toon ramp (two hard steps over a lifted ambient), sky-tinted shadow, haze. */
+/**
+ * Optical light, not a cel ramp: wrap-diffuse sunlight over a cool sky ambient, a warm bounce from
+ * the meadow, and an exponential aerial perspective. The name is kept (`toonStep`) because every
+ * plant, bark and foliage material in the world calls it in one place — but there are no value
+ * steps any more: the curve is continuous, the way a photograph's is.
+ */
 export const GLSL_LIGHT = /* glsl */ `
 uniform vec3 uSun;
 uniform vec3 uHaze;
+uniform float uFog;
+uniform vec3 uOrb;
 
-vec3 toonStep(vec3 base, vec3 n) {
-  // half-Lambert so a blade facing away from the sun still holds its colour
-  float w = dot(n, uSun) * 0.5 + 0.5;
-  float s1 = smoothstep(0.42, 0.475, w);
-  float s2 = smoothstep(0.66, 0.715, w);
-  // cool the shadow a touch so values separate without going grey
-  vec3 shadow = base * vec3(0.62, 0.68, 0.80);
-  vec3 lit = base * 1.02;
-  vec3 hot = base * 1.16;
-  return mix(mix(shadow, lit, s1), hot, s2);
+/* the fallen star's own light: warm, close, and gone within a few metres */
+vec3 orbGlow(vec3 world, vec3 base) {
+  vec3 d = world - uOrb;
+  float g = exp(-dot(d, d) * 0.08);
+  return base * vec3(1.30, 0.98, 0.58) * g * 0.75;
 }
 
+vec3 toonStep(vec3 base, vec3 n) {
+  vec3 nd = normalize(n);
+  float ndl = dot(nd, normalize(uSun));
+  // wrap diffuse: leaves and blades scatter, so the terminator is soft and the shadow never black
+  float wrap = clamp((ndl + 0.40) / 1.40, 0.0, 1.0);
+  float sky = 0.55 + 0.45 * clamp(nd.y, 0.0, 1.0);
+  float sunUp = 0.55 + 0.45 * clamp(uSun.y, 0.0, 1.0);
+
+  vec3 ambient = base * vec3(0.52, 0.62, 0.76) * (0.34 + 0.40 * sky);
+  vec3 sunlit = base * vec3(1.10, 1.05, 0.90) * (0.62 + 0.60 * wrap) * sunUp;
+  vec3 bounce = base * vec3(1.04, 0.98, 0.70) * 0.10 * (1.0 - wrap) * sky;
+  return ambient + sunlit + bounce;
+}
+
+/* exponential aerial perspective: distant layers melt into the horizon instead of ending at it */
 vec3 applyHaze(vec3 col, float dist, float start, float end) {
-  float f = smoothstep(start, end, dist);
-  return mix(col, uHaze, f * 0.86);
+  float f = 1.0 - exp(-max(dist - start * 0.25, 0.0) * 0.0032 * uFog);
+  return mix(col, uHaze, clamp(f, 0.0, 0.94));
 }
 `
 
@@ -600,7 +619,7 @@ export function createPlantMaterial({
         float iscale = length(instanceMatrix[1].xyz);
         vec2 bend = gustField(instanced.xz) * 0.42
                   + vec2(cos(phase), sin(phase)) * breath(phase) * 0.34;
-        bend += orbPush(instanced.xyz, 3.2) * 1.2;
+        bend += orbPush(instanced.xyz, 4.6) * 2.1;
 
         vec3 world = instanced.xyz;
         world.xz += bend * sway * sway * uSwayAmount * iscale;
@@ -632,6 +651,8 @@ export function createPlantMaterial({
         vec3 viewDir = normalize(vWorld - cameraPosition);
         float back = pow(max(dot(viewDir, uSun), 0.0), 1.8);
         col += base * vec3(1.25, 1.18, 0.72) * back * uTranslucency;
+        // the star's warm light, when it passes close
+        col += orbGlow(vWorld, base);
 
         if (uGloss > 0.0) {
           vec3 h = normalize(uSun - viewDir);

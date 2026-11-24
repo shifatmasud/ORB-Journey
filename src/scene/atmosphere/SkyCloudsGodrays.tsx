@@ -2,29 +2,55 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { atmosphere, journey, sampleAtmosphere } from './atmosphereState'
-import { cloudLobes, TIER } from './quality'
+import { TIER } from './quality'
 
 /**
- * Sky, clouds and crepuscular light — WebGL2 / GLSL ES 3.00 only.
+ * The sky — WebGL2 / GLSL ES 3.00 only.
  *
- * Three layers, all driven by the one atmosphere sample:
+ * Four layers, all driven by the one atmosphere sample:
  *
- *  1. `SkyDome`   – the gradient the light comes from. No sun disc (house rule): the glow, the
- *                   horizon haze and a soft fan of shafts carry it. The fan is a real crepuscular
- *                   ray pattern (beams diverge from the sun by perspective), and the cumulus in
- *                   front of it cuts it into stripes — which is what makes a god-ray read.
- *  2. `CloudSea`  – the hazy layer the cumulus tops emerge from: a horizontal FBM field at the
- *                   cloud base, faded near the lens and into the horizon haze.
- *  3. `Clouds`    – `Cumulus humilis`: flat base, domed cauliflower top. Instanced lobes with a
- *                   per-instance base plane, cut with `discard` so every cloud has one hard flat
- *                   bottom, then a 2-step toon light + rim, per REFERENCES §18.
+ *  1. `SkyDome`   – a Rayleigh/Mie morning gradient with a real star field and a Milky Way band for
+ *                   the chapter above the world, the golden-hour glow at the horizon, a soft fan of
+ *                   crepuscular shafts, and (from below the surface) Snell's window.
+ *  2. `CloudLayers` – two multi-octave FBM decks painted into the dome with a Henyey-Greenstein
+ *                   phase term, so the sun side of every cloud gets a silver lining and the turns
+ *                   away from it fall into a cool shade. Soft by construction: no geometry edges.
+ *  3. `CloudSea`  – the cloud-top deck seen from above, at y = 46: the sea the star falls toward.
+ *  4. `CloudWisps`– soft billboard puffs close to the lens, so the descent passes *through* cloud
+ *                   instead of past a backdrop.
+ *
+ * No sun disc (house rule except for the tight HDR glow the bloom turns into one): the gradient and
+ * the glare carry the light.
  */
 
-const GLSL_HEAD = /* glsl */ `
+const GLSL_NOISE = /* glsl */ `
 float hash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
   p += dot(p, p + 45.32);
   return fract(p.x * p.y);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x),
+             mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+/* three octaves: enough for cumulus structure, cheap enough for a phone */
+float fbm3(vec2 p) {
+  float v = 0.0;
+  float a = 0.54;
+  for (int i = 0; i < 3; i++) {
+    v += a * vnoise(p);
+    p = p * 2.07 + vec2(17.3, 9.1);
+    a *= 0.48;
+  }
+  return v;
+}
+/* Henyey-Greenstein: the forward-scattering lobe that puts the silver lining on a backlit cloud */
+float phaseHG(float cosT, float g) {
+  float g2 = g * g;
+  return (1.0 - g2) / (12.566371 * pow(1.0 + g2 - 2.0 * g * cosT, 1.5));
 }
 `
 
@@ -52,23 +78,125 @@ uniform float uSunPower;
 uniform float uMist;
 uniform float uShaft;
 uniform float uWindow;
+uniform float uStars;
+uniform float uNebula;
+uniform float uDeck;
+uniform vec3 uCloudLit;
+uniform vec3 uCloudShade;
+uniform vec3 uCloudRim;
 uniform float uTime;
 layout(location = 0) out vec4 fragColor;
-${GLSL_HEAD}
+${GLSL_NOISE}
+
+/* One FBM deck on a horizontal plane: the ray is intersected with the deck's altitude, so the
+   clouds converge at the horizon with real perspective and the camera can rise through them. */
+vec4 cloudDeck(vec3 d, float height, float scale, float coverage, float softness, float seed, float hg) {
+  float denom = d.y;
+  if (denom < 0.014) return vec4(0.0);
+  float t = (height - cameraPosition.y) / denom;
+  if (t < 0.0 || t > 30000.0) return vec4(0.0);
+  vec2 p = cameraPosition.xz + d.xz * t;
+  vec2 q = p * scale + vec2(uTime * 0.9, uTime * 0.6) + seed;
+
+  float n = fbm3(q);
+  float detail = fbm3(q * 2.55 + vec2(19.1, 4.7));
+  float field = n * 0.76 + detail * 0.30;
+
+  float horizonFade = smoothstep(0.015, 0.26, d.y);
+  float dens = smoothstep(coverage, coverage + softness, field) * horizonFade;
+  if (dens < 0.003) return vec4(0.0);
+
+  // self-shadow: is the cloud toward the sun thicker than this point?
+  vec2 sunStep = normalize(uSunDir.xz + vec2(1e-4)) * (0.055 / max(scale, 0.0001));
+  float towardSun = fbm3(q + sunStep);
+  float shadow = smoothstep(coverage + 0.01, coverage + 0.40, towardSun);
+  float thick = smoothstep(coverage, coverage + 0.42, field);
+  vec3 col = mix(uCloudShade * 0.92, uCloudLit, (1.0 - shadow * 0.78) * (0.28 + 0.72 * thick));
+  col = mix(col, uCloudLit * 1.05, thick * 0.28);
+
+  // silver lining: the forward-scattering lobe lights the thin edges on the sun's side
+  float cosT = dot(d, normalize(uSunDir));
+  float ph = phaseHG(cosT, hg) * 12.566371;
+  float edge = smoothstep(0.02, 0.28, dens) * (1.0 - smoothstep(0.30, 0.86, dens));
+  col += uCloudRim * ph * edge * 0.75 * uSunPower;
+  col += uCloudRim * pow(max(cosT, 0.0), 7.0) * dens * 0.16 * uSunPower;
+
+  // aerial perspective: a far deck leans into the horizon haze
+  float haze = 1.0 - exp(-t * 0.0011);
+  col = mix(col, uHaze, haze * 0.72);
+
+  float alpha = clamp(dens, 0.0, 1.0) * (1.0 - haze * 0.30) * uDeck;
+  return vec4(col, alpha);
+}
+
+/* The star field: two layers of crisp cells, multi-magnitude, with a faint twinkle. */
+vec3 starField(vec3 d) {
+  vec2 sph = vec2(atan(d.z, d.x), asin(clamp(d.y, -1.0, 1.0)));
+  vec3 acc = vec3(0.0);
+  for (int layer = 0; layer < 2; layer++) {
+    float k = layer == 0 ? 9.0 : 21.0;
+    vec2 g = sph * k;
+    vec2 id = floor(g);
+    vec2 f = fract(g);
+    float r = hash21(id + float(layer) * 41.7);
+    float mag = layer == 0 ? smoothstep(0.90, 0.999, r) : smoothstep(0.80, 0.995, r) * 0.55;
+    if (mag <= 0.001) continue;
+    vec2 pos = vec2(hash21(id + 3.7), hash21(id + 8.1)) * 0.7 + 0.15;
+    float dd = length(f - pos);
+    float size = layer == 0 ? 0.055 : 0.085;
+    float core = smoothstep(size, 0.0, dd);
+    float tw = 0.82 + 0.18 * sin(uTime * 1.7 + r * 63.0);
+    vec3 tint = mix(vec3(1.0, 0.86, 0.66), vec3(0.78, 0.88, 1.0), hash21(id + 12.3));
+    acc += tint * core * mag * tw * (layer == 0 ? 2.4 : 1.2);
+  }
+  return acc;
+}
+
+/* The Milky Way: a dusty band with a faint nebular warm/cool split. */
+vec3 milkyWay(vec3 d) {
+  vec3 axis = normalize(vec3(0.34, 0.5, -0.79));
+  float band = exp(-pow(dot(d, axis) / 0.23, 2.0));
+  if (band < 0.004) return vec3(0.0);
+  vec2 p = vec2(atan(d.z, d.x) * 3.4, asin(clamp(d.y, -1.0, 1.0)) * 4.6);
+  float dust = fbm3(p * 1.7 + 11.0);
+  float clumps = fbm3(p * 4.1 + 3.0);
+  float v = band * (0.25 + 0.75 * smoothstep(0.25, 0.75, dust * 0.7 + clumps * 0.4));
+  vec3 tint = mix(vec3(0.30, 0.36, 0.56), vec3(0.62, 0.52, 0.40), smoothstep(0.3, 0.8, clumps));
+  return tint * v * 0.55;
+}
+
 void main() {
   vec3 d = normalize(vDir);
   float h = d.y;
 
-  vec3 col = mix(uHorizon, uMid, smoothstep(0.0, 0.17, max(h, 0.0)));
-  col = mix(col, uZenith, smoothstep(0.10, 0.52, max(h, 0.0)));
-  // below the horizon: atmospheric perspective on the land (or the water's underside)
+  // the atmosphere's gradient: horizon haze → mid sky → zenith
+  vec3 col = mix(uHorizon, uMid, smoothstep(0.0, 0.19, max(h, 0.0)));
+  col = mix(col, uZenith, smoothstep(0.09, 0.55, max(h, 0.0)));
+  // below the horizon: the land (or the water's underside)
   col = mix(uLand, col, smoothstep(-0.22, 0.01, h));
-  // the haze gathers at the horizon and thickens with the weather
-  col = mix(col, uHaze, exp(-abs(h) * 11.0) * (0.28 + 0.42 * uMist));
+  // haze gathers at the horizon and thickens with the weather
+  col = mix(col, uHaze, exp(-abs(h) * 10.0) * (0.24 + 0.40 * uMist));
 
-  // the sun: glow only, never a disc
+  // ---- the chapter above the world: stars, a dusty galaxy, the planet's limb glow
+  if (uStars > 0.003) {
+    float veil = smoothstep(-0.06, 0.16, h);
+    col = mix(col, uZenith * 0.55, uStars * smoothstep(0.05, 0.8, h) * 0.75);
+    col += (starField(d) + milkyWay(d) * uNebula) * uStars * veil;
+    // Earth's atmosphere seen edge-on: a bright blue-white arc riding the horizon
+    float limb = exp(-pow((h - 0.012) / 0.030, 2.0));
+    float outer = exp(-pow((h - 0.02) / 0.14, 2.0));
+    col += vec3(0.46, 0.68, 1.0) * limb * uStars * 0.85;
+    col += vec3(0.22, 0.40, 0.75) * outer * uStars * 0.30;
+    col += uSunColor * pow(max(dot(d, normalize(uSunDir)), 0.0), 12.0) * uStars * 0.35;
+  }
+
+  // ---- clouds: two FBM decks under the open sky (the fall passes through the lower one)
+  vec4 highDeck = cloudDeck(d, 320.0, 0.0065, 0.56, 0.16, 0.0, 0.62);
+  col = col * (1.0 - highDeck.a) + highDeck.rgb * highDeck.a;
+
+  // the sun: a tight HDR glow, never a hard disc — the bloom makes it read as a sun
   float sd = max(dot(d, normalize(uSunDir)), 0.0);
-  col += uSunColor * (pow(sd, 4.0) * 0.14 + pow(sd, 70.0) * 0.5) * uSunPower;
+  col += uSunColor * (pow(sd, 5.0) * 0.10 + pow(sd, 90.0) * 0.42 + pow(sd, 900.0) * 2.4) * uSunPower;
 
   // crepuscular shafts: a slowly turning fan around the sun, cut by the clouds in front of it
   vec3 t1 = normalize(cross(uSunDir, vec3(0.0, 1.0, 0.0)) + vec3(0.0001));
@@ -76,20 +204,20 @@ void main() {
   vec2 rel = vec2(dot(d, t1), dot(d, t2));
   float r = length(rel);
   float ang = atan(rel.y, rel.x);
-  float fan = 0.5 + 0.5 * sin(ang * 13.0 + sin(ang * 3.1) * 1.1 + uTime * 0.035);
-  fan = pow(fan, 4.0);
-  float reach = smoothstep(0.02, 0.30, r) * (1.0 - smoothstep(0.6, 1.2, r)) * smoothstep(0.0, 0.5, sd);
-  col += uSunColor * fan * reach * 0.16 * uShaft;
+  float fan = 0.5 + 0.5 * sin(ang * 11.0 + sin(ang * 2.7) * 1.4 + uTime * 0.03);
+  fan = pow(fan, 3.0);
+  float reach = smoothstep(0.02, 0.34, r) * (1.0 - smoothstep(0.55, 1.15, r)) * smoothstep(0.0, 0.45, sd);
+  col += uSunColor * fan * reach * 0.24 * uShaft;
 
   // Snell's window: the surface seen from below — a bright, wobbling opening overhead
   float up = max(h, 0.0);
   float wob = 0.02 * sin(d.x * 15.0 + uTime * 0.7) * sin(d.z * 13.0 - uTime * 0.55);
-  float win = smoothstep(0.72, 0.90, up + wob);
-  col += uSunColor * win * 0.30 * uWindow;
-  col += uSunColor * pow(up, 9.0) * 0.16 * uWindow;
+  float win = smoothstep(0.70, 0.92, up + wob);
+  col += uSunColor * win * 0.22 * uWindow;
+  col += uSunColor * pow(up, 8.0) * 0.14 * uWindow;
 
   // a breath of grain so the big gradients never band
-  col += (hash21(gl_FragCoord.xy + fract(uTime) * 41.0) - 0.5) * 0.006;
+  col += (hash21(gl_FragCoord.xy + fract(uTime) * 41.0) - 0.5) * 0.004;
   fragColor = vec4(max(col, 0.0), 1.0);
 }
 `
@@ -97,7 +225,7 @@ void main() {
 function SkyDome() {
   const camera = useThree((state) => state.camera)
   const mesh = useRef<THREE.Mesh>(null)
-  const geometry = useMemo(() => new THREE.SphereGeometry(600, 48, 28), [])
+  const geometry = useMemo(() => new THREE.SphereGeometry(900, 48, 32), [])
   const material = useMemo(
     () =>
       new THREE.ShaderMaterial({
@@ -118,6 +246,12 @@ function SkyDome() {
           uMist: { value: 0.5 },
           uShaft: { value: 0.5 },
           uWindow: { value: 0 },
+          uStars: { value: 0 },
+          uNebula: { value: 0 },
+          uDeck: { value: 0 },
+          uCloudLit: { value: new THREE.Color() },
+          uCloudShade: { value: new THREE.Color() },
+          uCloudRim: { value: new THREE.Color() },
           uTime: { value: 0 },
         },
       }),
@@ -138,12 +272,20 @@ function SkyDome() {
     uniforms.uMist.value = atmosphere.mist
     uniforms.uShaft.value = atmosphere.shaft
     uniforms.uWindow.value = atmosphere.window
+    uniforms.uStars.value = atmosphere.stars
+    uniforms.uNebula.value = atmosphere.nebula
+    uniforms.uDeck.value = Math.min(1, Math.max(0, 1 - atmosphere.stars * 1.1)) * (0.35 + 0.65 * atmosphere.sea)
+    uniforms.uCloudLit.value.copy(atmosphere.cloudLit)
+    uniforms.uCloudShade.value.copy(atmosphere.cloudShade)
+    uniforms.uCloudRim.value.copy(atmosphere.cloudRim)
     uniforms.uTime.value = journey.time
     mesh.current?.position.copy(camera.position)
   })
 
   return <mesh ref={mesh} geometry={geometry} material={material} frustumCulled={false} renderOrder={-100} />
 }
+
+/* ---------------------------------------------------------- cloud layers */
 
 /* ------------------------------------------------------------ cloud sea */
 
@@ -163,57 +305,52 @@ in vec2 vUv;
 in vec3 vWorld;
 uniform vec3 uLit;
 uniform vec3 uShade;
+uniform vec3 uRim;
 uniform vec3 uHaze;
-uniform vec3 uMid;
+uniform vec3 uSunColor;
+uniform vec3 uSunDir;
+uniform float uSunPower;
 uniform float uSea;
+uniform float uSpace;
 uniform float uTime;
 layout(location = 0) out vec4 fragColor;
-${GLSL_HEAD}
-float vnoise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  vec2 u = f * f * (3.0 - 2.0 * f);
-  return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x),
-             mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
-}
-float fbm(vec2 p) {
-  float v = 0.0;
-  float a = 0.62;
-  for (int i = 0; i < 2; i++) {
-    v += a * vnoise(p);
-    p = p * 2.03 + 19.0;
-    a *= 0.38;
-  }
-  return v;
-}
+${GLSL_NOISE}
+
 void main() {
   if (uSea < 0.01) discard;
-  // a deck of cumulus tops: big soft cells, lit from above, thinner toward the horizon
-  vec2 drift = vec2(uTime * 0.006, uTime * 0.004);
-  vec2 q = vUv * 55.0 + drift;
-  float n = fbm(q);
-  float n2 = fbm(q * 1.7 + 5.0);
-  float field = n * 0.80 + n2 * 0.26;
+  vec2 drift = vec2(uTime * 1.2, uTime * 0.9);
+  vec2 p = vWorld.xz * 0.028 + drift;
+  float n = fbm3(p);
+  float n2 = fbm3(p * 2.6 + 5.0);
+  float n3 = vnoise(p * 7.3);
+  float field = n * 0.66 + n2 * 0.30 + n3 * 0.10;
 
   float d = length(vWorld.xz - cameraPosition.xz);
-  float near = smoothstep(4.0, 42.0, d);
-  float far = 1.0 - smoothstep(240.0, 520.0, d);
-  float cover = smoothstep(0.26, 0.66, field);
-  float alpha = uSea * near * far * (0.55 + 0.45 * cover);
-  if (alpha < 0.004) discard;
+  float near = smoothstep(2.0, 26.0, d);
+  float far = 1.0 - smoothstep(420.0, 900.0, d);
 
-  vec3 col = mix(uLit * 0.86, uLit, 0.34 + 0.66 * smoothstep(0.20, 0.78, field));
-  col = mix(col, uMid, 0.12);
-  col = mix(col, uLit * 1.03, pow(n2, 2.0) * 0.30);
-  col = mix(col, uHaze, smoothstep(160.0, 500.0, d) * 0.9);
-  col += (hash21(gl_FragCoord.xy) - 0.5) * 0.006;
+  // the tops catch the sun, the troughs hold a cool shade
+  float crown = smoothstep(0.30, 0.70, field);
+  float belly = smoothstep(0.62, 0.28, field);
+  vec3 col = mix(uShade * 0.92, uLit, crown * 0.92 + 0.08);
+  col = mix(col, uShade * 1.02, belly * 0.45);
+  // the sun side of each cell catches a warm rim
+  col += uRim * crown * belly * 0.18 * uSunPower;
+  col = mix(col, uHaze, (1.0 - far) * 0.55 + smoothstep(300.0, 900.0, d) * 0.55);
+  col += uSunColor * pow(max(dot(reflect(normalize(vWorld - cameraPosition), vec3(0.0, 1.0, 0.0)), normalize(uSunDir)), 0.0), 4.0) * 0.10 * uSunPower;
+
+  float alpha = uSea * near * far * smoothstep(54.0, 92.0, cameraPosition.y);
+  // from very high above, the deck is a smooth bright continent of cloud
+  alpha = mix(alpha, alpha * 0.98, uSpace);
+  if (alpha < 0.004) discard;
   fragColor = vec4(col, alpha);
 }
 `
 
 function CloudSea() {
+  const mesh = useRef<THREE.Mesh>(null)
   const geometry = useMemo(() => {
-    const plane = new THREE.PlaneGeometry(1400, 1400, 1, 1)
+    const plane = new THREE.PlaneGeometry(3000, 3000, 1, 1)
     plane.rotateX(-Math.PI / 2)
     return plane
   }, [])
@@ -225,73 +362,70 @@ function CloudSea() {
         fragmentShader: seaFragment,
         transparent: true,
         depthWrite: false,
-        side: THREE.FrontSide,
+        side: THREE.DoubleSide,
         uniforms: {
           uLit: { value: new THREE.Color() },
           uShade: { value: new THREE.Color() },
+          uRim: { value: new THREE.Color() },
           uHaze: { value: new THREE.Color() },
-          uMid: { value: new THREE.Color() },
+          uSunColor: { value: new THREE.Color() },
+          uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+          uSunPower: { value: 1 },
           uSea: { value: 1 },
+          uSpace: { value: 0 },
           uTime: { value: 0 },
         },
       }),
     [],
   )
-  useFrame(() => {
+  useFrame((state) => {
     sampleAtmosphere(journey.u)
     const u = material.uniforms
     u.uLit.value.copy(atmosphere.cloudLit)
     u.uShade.value.copy(atmosphere.cloudShade)
+    u.uRim.value.copy(atmosphere.cloudRim)
     u.uHaze.value.copy(atmosphere.haze)
-    u.uMid.value.copy(atmosphere.mid)
+    u.uSunColor.value.copy(atmosphere.sun)
+    u.uSunDir.value.copy(atmosphere.sunDir)
+    u.uSunPower.value = atmosphere.sunPower
     u.uSea.value = atmosphere.sea
+    u.uSpace.value = atmosphere.stars
     u.uTime.value = journey.time
+    // the deck is recentred under the lens: the world-space noise keeps it still
+    if (mesh.current) mesh.current.position.set(state.camera.position.x, 34, state.camera.position.z)
   })
   return (
     <mesh
+      ref={mesh}
       geometry={geometry}
       material={material}
-      position={[0, 46, -40]}
+      position={[0, 34, -40]}
       frustumCulled={false}
       renderOrder={-50}
     />
   )
 }
 
-/* -------------------------------------------------------------- cumulus */
+/* ------------------------------------------------------------ near wisps */
 
-type Lobe = { x: number; y: number; z: number; sx: number; sy: number; base: number; tint: number; drift: number }
+type Wisp = { x: number; y: number; z: number; size: number; seed: number; base: number; drift: number }
 
-function buildLobes(count: number): Lobe[] {
-  const lobes: Lobe[] = []
+function buildWisps(count: number): Wisp[] {
+  const out: Wisp[] = []
   const rand = mulberry(20261124)
-  const clouds = Math.max(8, Math.round(count / 9))
-  for (let c = 0; c < clouds; c++) {
-    const low = c < 3 // a loose band the lens drops through between beats 1 and 2
-    const near = !low && c < 7
-    const radius = low ? 5 + rand() * 5 : near ? 7 + rand() * 7 : 11 + rand() * 15
-    const cx = (rand() * 2 - 1) * (low ? 60 : near ? 80 : 230)
-    const cz = low ? -55 - rand() * 70 : near ? -80 - rand() * 70 : -110 - rand() * 220
-    const cy = low ? 17 + rand() * 14 : 48 + rand() * (near ? 14 : 30)
-    const base = low ? cy - radius * 0.45 : 46.5
-    const n = 7 + Math.floor(rand() * 5)
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2 + rand() * 0.8
-      const rad = radius * (0.15 + rand() * 0.82)
-      const size = radius * (0.26 + Math.pow(rand(), 1.6) * 0.62)
-      lobes.push({
-        x: cx + Math.cos(a) * rad,
-        y: base + size * 0.55 + rand() * radius * 0.42,
-        z: cz + Math.sin(a) * rad * 0.85,
-        sx: size,
-        sy: size * (0.58 + rand() * 0.2),
-        base,
-        tint: rand(),
-        drift: 0.6 + rand() * 0.8,
-      })
-    }
+  for (let i = 0; i < count; i++) {
+    const low = i < count * 0.55
+    out.push({
+      x: (rand() * 2 - 1) * (low ? 34 : 90),
+      y: low ? 12 + rand() * 18 : 40 + rand() * 46,
+      z: low ? -8 - rand() * 60 : -40 - rand() * 150,
+      size: low ? 4 + rand() * 6 : 7 + rand() * 10,
+      seed: rand() * 97,
+      base: low ? 1 : 1,
+      drift: 0.4 + rand() * 0.8,
+    })
   }
-  return lobes.slice(0, count)
+  return out.sort((a, b) => b.z - a.z)
 }
 
 /** deterministic PRNG so every reload paints the same sky */
@@ -306,108 +440,106 @@ function mulberry(seed: number) {
   }
 }
 
-const cloudVertex = /* glsl */ `
-in float aTint;
-in float aDrift;
-in float aBase;
+const wispVertex = /* glsl */ `
+in vec3 aCentre;
+in vec4 aData;   // size, seed, drift, lift
 uniform float uTime;
 uniform float uLift;
+out vec2 vLocal;
 out vec3 vWorld;
-out vec3 vNormalW;
-out float vTint;
-out float vBase;
 out float vDist;
+out float vSeed;
 void main() {
-  mat4 m = instanceMatrix;
-  vec4 local = m * vec4(position, 1.0);
-  vec3 world = local.xyz;
-  world.x += uTime * 0.5 * aDrift;
-  world.y += uLift;
-  vWorld = world;
-  vNormalW = normalize(mat3(m) * normal);
-  vTint = aTint;
-  vBase = aBase + uLift;
-  vec4 view = viewMatrix * vec4(world, 1.0);
+  vec3 centre = aCentre;
+  centre.x += uTime * 0.55 * aData.z;
+  centre.y += uLift * aData.w;
+  vec4 view = viewMatrix * vec4(centre, 1.0);
+  // camera-facing billboard, sized in world units
+  view.xy += position.xy * aData.x;
+  vWorld = centre;
+  vLocal = position.xy;
   vDist = -view.z;
+  vSeed = aData.y;
   gl_Position = projectionMatrix * view;
 }
 `
 
-const cloudFragment = /* glsl */ `
+const wispFragment = /* glsl */ `
+in vec2 vLocal;
 in vec3 vWorld;
-in vec3 vNormalW;
-in float vTint;
-in float vBase;
 in float vDist;
+in float vSeed;
 uniform vec3 uLit;
 uniform vec3 uShade;
 uniform vec3 uRim;
 uniform vec3 uHaze;
 uniform vec3 uSunDir;
 uniform float uSunPower;
+uniform float uTime;
 layout(location = 0) out vec4 fragColor;
-${GLSL_HEAD}
+${GLSL_NOISE}
+
 void main() {
-  // the flat base of cumulus humilis: one hard, level bottom per cloud
-  if (vWorld.y < vBase + hash21(floor(vWorld.xz * 3.0)) * 0.12) discard;
+  // local uv in -0.5..0.5; a radial dome with FBM erosion: no quad edge, no hard sphere
+  float r = length(vLocal) * 2.0;
+  if (r > 1.0) discard;
+  float dome = sqrt(max(0.0, 1.0 - r * r));
+  vec2 p = vWorld.xz * 0.16 + vSeed + vec2(uTime * 0.02, uTime * 0.015);
+  float n = fbm3(p);
+  float n2 = fbm3(p * 2.3 + 4.0);
+  float body = dome * 0.85 + (n - 0.5) * 0.55 + (n2 - 0.5) * 0.22;
+  float dens = smoothstep(0.16, 0.62, body) * smoothstep(1.05, 0.45, r);
+  if (dens < 0.004) discard;
 
-  vec3 n = normalize(vNormalW);
-  vec3 v = normalize(cameraPosition - vWorld);
-  float l = dot(n, uSunDir);
-  float form = smoothstep(-0.10, 0.12, l);
-  float sun = smoothstep(0.36, 0.62, l);
+  vec3 nrm = normalize(vec3(vLocal * 2.0, dome));
+  float l = max(dot(nrm, normalize(vec3(0.3, 0.75, 0.6))), 0.0);
+  vec3 col = mix(uShade, uLit, 0.35 + 0.65 * (0.5 + 0.5 * l));
+  float cosT = dot(normalize(vWorld - cameraPosition), normalize(uSunDir));
+  col += uRim * (phaseHG(cosT, 0.65) * 6.0) * dens * 0.5 * uSunPower;
+  col = mix(col, uHaze, clamp(vDist / 260.0, 0.0, 1.0) * 0.9);
 
-  // a vertical ramp holds the lobes together as one mass; the sun only shapes the local form
-  float up = clamp((vWorld.y - vBase) / 26.0, 0.0, 1.0);
-  float ramp = 0.46 + 0.54 * pow(up, 0.6);
-  float lightAmt = clamp(ramp * 0.66 + form * 0.34, 0.0, 1.0);
-  vec3 col = mix(uShade, uLit, lightAmt);
-  col = mix(col, uShade * 1.02, (1.0 - form) * (0.16 + 0.2 * vTint));
-  col = mix(col, uShade * 0.92, pow(1.0 - form, 2.0) * 0.28);
-  col *= 0.90 + 0.12 * clamp(n.y, -1.0, 1.0);
-
-  float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
-  col += uRim * rim * (0.35 + 0.65 * sun) * 0.55;
-
-  // the underside darkens toward the flat base, then dissolves into the haze the cloud sits in
-  float above = smoothstep(0.0, 6.0, vWorld.y - vBase);
-  col = mix(uShade * 0.78, col, 0.28 + 0.72 * above);
-  col = mix(col, uHaze, (1.0 - smoothstep(0.0, 5.5, vWorld.y - vBase)) * 0.7);
-
-  // aerial perspective: far clouds lean into the horizon haze
-  float haze = clamp(vDist / 300.0, 0.0, 1.0);
-  col = mix(col, uHaze, haze * haze * 0.7);
-  col *= 0.94 + 0.12 * uSunPower;
-
-  fragColor = vec4(col, 1.0);
+  float near = smoothstep(3.0, 16.0, vDist);
+  float alpha = dens * near * 0.55;
+  fragColor = vec4(col, alpha);
 }
 `
 
-function Clouds() {
+function CloudWisps() {
   const mesh = useRef<THREE.InstancedMesh>(null)
-  const geometry = useMemo(() => new THREE.SphereGeometry(1, TIER === 'low' ? 9 : 12, TIER === 'low' ? 7 : 9), [])
-  const lobes = useMemo(() => buildLobes(cloudLobes), [])
-  const attributes = useMemo(() => {
-    const tint = new Float32Array(lobes.length)
-    const drift = new Float32Array(lobes.length)
-    const base = new Float32Array(lobes.length)
-    lobes.forEach((lobe, i) => {
-      tint[i] = lobe.tint
-      drift[i] = lobe.drift
-      base[i] = lobe.base
+  const count = TIER === 'low' ? 8 : 14
+  const wisps = useMemo(() => buildWisps(count), [count])
+  const geometry = useMemo(() => {
+    const base = new THREE.PlaneGeometry(1, 1)
+    const geo = new THREE.InstancedBufferGeometry()
+    geo.index = base.index
+    geo.setAttribute('position', base.attributes.position)
+    geo.setAttribute('uv', base.attributes.uv)
+    const centre = new Float32Array(wisps.length * 3)
+    const data = new Float32Array(wisps.length * 4)
+    wisps.forEach((w, i) => {
+      centre[i * 3] = w.x
+      centre[i * 3 + 1] = w.y
+      centre[i * 3 + 2] = w.z
+      data[i * 4] = w.size
+      data[i * 4 + 1] = w.seed
+      data[i * 4 + 2] = w.drift
+      data[i * 4 + 3] = 0.6 + (i % 5) * 0.12
     })
-    geometry.setAttribute('aTint', new THREE.InstancedBufferAttribute(tint, 1))
-    geometry.setAttribute('aDrift', new THREE.InstancedBufferAttribute(drift, 1))
-    geometry.setAttribute('aBase', new THREE.InstancedBufferAttribute(base, 1))
-    return geometry
-  }, [lobes, geometry])
-
+    geo.setAttribute('aCentre', new THREE.InstancedBufferAttribute(centre, 3))
+    geo.setAttribute('aData', new THREE.InstancedBufferAttribute(data, 4))
+    geo.instanceCount = wisps.length
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 40, -40), 400)
+    return geo
+  }, [wisps])
   const material = useMemo(
     () =>
       new THREE.ShaderMaterial({
         glslVersion: THREE.GLSL3,
-        vertexShader: cloudVertex,
-        fragmentShader: cloudFragment,
+        vertexShader: wispVertex,
+        fragmentShader: wispFragment,
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
         uniforms: {
           uLit: { value: new THREE.Color() },
           uShade: { value: new THREE.Color() },
@@ -421,49 +553,22 @@ function Clouds() {
       }),
     [],
   )
-
-  const placed = useRef(false)
   useFrame(() => {
     sampleAtmosphere(journey.u)
-    const uniforms = material.uniforms
-    uniforms.uLit.value.copy(atmosphere.cloudLit)
-    uniforms.uShade.value.copy(atmosphere.cloudShade)
-    uniforms.uRim.value.copy(atmosphere.cloudRim)
-    uniforms.uHaze.value.copy(atmosphere.haze)
-    uniforms.uSunDir.value.copy(atmosphere.sunDir)
-    uniforms.uSunPower.value = atmosphere.sunPower
-    uniforms.uTime.value = journey.time
-    // the dive: the cloud deck rises out of the frame instead of fading through its own lobes
-    const dive = Math.max(0, Math.min(1, (journey.u - 3.5) / 0.5))
-    uniforms.uLift.value = dive * dive * 420
-    if (mesh.current) mesh.current.visible = atmosphere.sea > 0.02 || journey.u < 3.6
-
-    if (mesh.current && !placed.current) {
-      placed.current = true
-      const m = new THREE.Matrix4()
-      const q = new THREE.Quaternion()
-      const s = new THREE.Vector3()
-      const p = new THREE.Vector3()
-      const up = new THREE.Vector3(0, 1, 0)
-      lobes.forEach((lobe, i) => {
-        p.set(lobe.x, lobe.y, lobe.z)
-        q.setFromAxisAngle(up, lobe.tint * Math.PI * 2)
-        s.set(lobe.sx, lobe.sy, lobe.sx)
-        m.compose(p, q, s)
-        mesh.current!.setMatrixAt(i, m)
-      })
-      mesh.current.instanceMatrix.needsUpdate = true
-    }
+    const u = material.uniforms
+    u.uLit.value.copy(atmosphere.cloudLit)
+    u.uShade.value.copy(atmosphere.cloudShade)
+    u.uRim.value.copy(atmosphere.cloudRim)
+    u.uHaze.value.copy(atmosphere.haze)
+    u.uSunDir.value.copy(atmosphere.sunDir)
+    u.uSunPower.value = atmosphere.sunPower
+    u.uTime.value = journey.time
+    // the dive lifts the near wisps out of frame rather than fading them
+    const dive = Math.max(0, Math.min(1, (journey.u - 2.4) / 0.8))
+    u.uLift.value = dive * dive * 90
+    if (mesh.current) mesh.current.visible = journey.u > 0.85 && journey.u < 1.55 && atmosphere.sea > 0.05
   })
-
-  return (
-    <instancedMesh
-      ref={mesh}
-      args={[attributes, material, lobes.length]}
-      frustumCulled={false}
-      renderOrder={-40}
-    />
-  )
+  return <mesh ref={mesh} geometry={geometry} material={material} frustumCulled={false} renderOrder={-40} />
 }
 
 export function SkyCloudsGodrays() {
@@ -471,7 +576,7 @@ export function SkyCloudsGodrays() {
     <>
       <SkyDome />
       <CloudSea />
-      <Clouds />
+      <CloudWisps />
     </>
   )
 }

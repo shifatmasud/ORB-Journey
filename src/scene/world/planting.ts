@@ -8,7 +8,32 @@
  * drawn surface.
  */
 import { LAKE_LEVEL, sampleTerrain, slopeAt } from './Terrain'
-import { distanceToSightline } from './path'
+/**
+ * The corridor the star travels is kept clear: plants within `sightline` metres of the spline's
+ * ground projection are rejected, so nothing ever stands between the lens and the star.
+ */
+const SIGHTLINE: Array<[number, number]> = [
+  [0, 60],
+  [0, 10],
+  [0, -40],
+  [0, -120],
+  [0, -220],
+  [0, -330],
+]
+
+export function distanceToSightline(x: number, z: number): number {
+  let best = Infinity
+  for (let i = 0; i < SIGHTLINE.length - 1; i++) {
+    const [ax, az] = SIGHTLINE[i]
+    const [bx, bz] = SIGHTLINE[i + 1]
+    const dx = bx - ax
+    const dz = bz - az
+    const len = dx * dx + dz * dz
+    const t = len > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / len)) : 0
+    best = Math.min(best, Math.hypot(x - (ax + dx * t), z - (az + dz * t)))
+  }
+  return best
+}
 
 export type Rand = () => number
 

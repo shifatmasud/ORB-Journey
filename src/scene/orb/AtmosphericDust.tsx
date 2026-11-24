@@ -1,7 +1,7 @@
 import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useMemo, useState } from 'react'
 import * as THREE from 'three'
-import type { OrbNumberRef, OrbPointerRef } from './PurpleOrb'
+import type { OrbNumberRef, OrbPointerRef } from './GoldenStar'
 
 /**
  * Atmospheric dust: pollen and light motes above the surface, suspended
@@ -22,8 +22,8 @@ type AtmosphericDustProps = {
 
 const MAX_DELTA = 1 / 20
 /** Progress window where the journey crosses into water. */
-const UNDER_START = 0.6
-const UNDER_END = 0.72
+const UNDER_START = 0.845
+const UNDER_END = 0.875
 /** Vertical wrap span of the dust volume, in world units. */
 const SPAN_Y = 4.6
 const BASE_Y = -1.7
@@ -79,7 +79,7 @@ void main() {
   float twinkle = 0.55 + 0.45 * sin(t * 0.8 + ph * 4.0);
   float nearFade = smoothstep(0.6, 2.4, dist);
   vAlpha = edge * twinkle * nearFade * mix(0.62, 0.60, uUnder) * (0.5 + 0.5 * s);
-  vTint = mix(vec3(1.0, 0.90, 0.72), vec3(0.70, 0.88, 1.0), uUnder);
+  vTint = mix(vec3(1.0, 0.86, 0.58), vec3(0.72, 0.90, 1.0), uUnder);
 }
 `
 
