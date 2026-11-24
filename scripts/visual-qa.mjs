@@ -23,7 +23,8 @@ const STOPS = [0, 0.25, 0.5, 0.75, 1]
 const VIEWPORTS = [
   { name: 'desktop', width: 1440, height: 900, deviceScaleFactor: 1, isMobile: false, hasTouch: false },
   { name: 'mobile', width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
-]
+// `QA_ONLY=desktop|mobile` runs one viewport (a slow CPU rasterizer can outlast a single shell).
+].filter((viewport) => !process.env.QA_ONLY || viewport.name === process.env.QA_ONLY)
 
 const CHROMIUM_ARGS = [
   '--use-gl=angle',
@@ -87,14 +88,24 @@ function attachLogging(page, bucket, viewportName) {
 }
 
 async function settle(page) {
-  // Two animation frames plus a short beat: the R3F loop and framer-motion
-  // scroll transforms both commit on rAF, and SwiftShader frames are slow.
+  // Wait for real frames, not a timer: the app counts drawn frames in
+  // `__ORB_FRAME__`, and a CPU rasterizer can take seconds per frame, so a fixed
+  // delay can screenshot a buffer the compositor has not received yet (black).
   await page.evaluate(
     () =>
       new Promise((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 260)))
+        const start = window.__ORB_FRAME__ ?? 0
+        let ticks = 0
+        const tick = () => {
+          ticks += 1
+          if ((window.__ORB_FRAME__ ?? 0) >= start + 3 || ticks > 600) resolve()
+          else requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
       }),
   )
+  // a short beat for the scroll transforms (framer-motion) to commit
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 220)))
 }
 
 async function scrollToProgress(page, progress) {
@@ -135,17 +146,20 @@ async function run() {
         reducedMotion: 'no-preference',
       })
       const page = await context.newPage()
+      // the CPU rasterizer needs a while for a 1440x900 frame of world + water
+      page.setDefaultTimeout(180_000)
       attachLogging(page, errors, viewport.name)
 
-      await page.goto(BASE, { waitUntil: 'load' })
+      await page.goto(`${BASE}?qa=1`, { waitUntil: 'load' })
       await page.waitForFunction(() => window.__ORB_READY__ === true, undefined, { timeout: 60_000 })
       await page.evaluate(() => document.fonts?.ready)
       await settle(page)
 
       const gl = await page.evaluate(() => window.__ORB_GL__ ?? null)
       const webglAttr = await page.evaluate(() => document.documentElement.dataset.webgl ?? null)
+      // the stage's WebGL canvas, not the header's sound-wave 2D canvas
       const canvasBox = await page.evaluate(() => {
-        const canvas = document.querySelector('canvas')
+        const canvas = document.querySelector('.canvas-layer canvas')
         if (!canvas) return null
         const rect = canvas.getBoundingClientRect()
         return { width: Math.round(rect.width), height: Math.round(rect.height) }
@@ -183,13 +197,20 @@ async function run() {
         report.viewports[viewport.name].stops.push({ progress, ...metrics })
       }
 
-      // Hover + scrub: pointer parallax on the orb and a wheel scrub back up
-      // the page, captured mid-scroll so both pointer and scroll inputs show.
+      // Hover + scrub: a stroke across the lake (a pointer over the sky paints
+      // nothing — the trail is raycast onto the water plane) plus a wheel scrub
+      // back up the page, captured mid-scroll so both inputs show.
       await scrollToProgress(page, 0.5)
-      const cx = Math.round(viewport.width / 2)
-      const cy = Math.round(viewport.height * 0.45)
-      await page.mouse.move(cx, cy, { steps: 8 })
-      await page.mouse.move(Math.round(viewport.width * 0.74), Math.round(viewport.height * 0.36), { steps: 12 })
+      await page.mouse.move(
+        Math.round(viewport.width * 0.42),
+        Math.round(viewport.height * 0.82),
+        { steps: 8 },
+      )
+      await page.mouse.move(
+        Math.round(viewport.width * 0.66),
+        Math.round(viewport.height * 0.74),
+        { steps: 14 },
+      )
       await settle(page)
       await page.screenshot({ path: path.join(OUT, `${viewport.name}-scrub-hover.png`) })
       report.viewports[viewport.name].shots.push(`${viewport.name}-scrub-hover.png`)
@@ -198,12 +219,19 @@ async function run() {
       await settle(page)
       await page.mouse.wheel(0, 640)
       await settle(page)
-      await page.mouse.move(Math.round(viewport.width * 0.26), Math.round(viewport.height * 0.58), { steps: 10 })
+      await page.mouse.move(Math.round(viewport.width * 0.3), Math.round(viewport.height * 0.78), { steps: 10 })
       await settle(page)
       const scrubbed = await page.evaluate(() => Math.round(window.scrollY))
       await page.screenshot({ path: path.join(OUT, `${viewport.name}-scrub.png`) })
       report.viewports[viewport.name].shots.push(`${viewport.name}-scrub.png`)
       report.viewports[viewport.name].scrubScrollY = scrubbed
+
+      // The air–water split line, last: the lens is crossing y = -1.6 here, so
+      // this is the frame where terrain/water depth order has to be clean.
+      const splitMetrics = await scrollToProgress(page, 0.82)
+      await page.screenshot({ path: path.join(OUT, `${viewport.name}-split.png`) })
+      report.viewports[viewport.name].shots.push(`${viewport.name}-split.png`)
+      report.viewports[viewport.name].split = splitMetrics
 
       await context.close()
     }
@@ -215,7 +243,7 @@ async function run() {
   report.errorCount = errors.length
   await writeFile(path.join(OUT, 'qa-report.json'), `${JSON.stringify(report, null, 2)}\n`)
 
-  console.log(`\nORB-Journey visual QA — ${STOPS.length * VIEWPORTS.length + VIEWPORTS.length * 2} screenshots in ${OUT}`)
+  console.log(`\nORB-Journey visual QA — ${STOPS.length * VIEWPORTS.length + VIEWPORTS.length * 3} screenshots in ${OUT}`)
   for (const [name, data] of Object.entries(report.viewports)) {
     console.log(
       `  ${name}: WebGL2=${data.gl?.webgl2} renderer="${data.gl?.renderer}" glVersion="${data.gl?.version}" canvas=${data.canvas?.width}x${data.canvas?.height}`,
