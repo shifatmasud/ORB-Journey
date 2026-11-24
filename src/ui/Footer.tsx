@@ -25,7 +25,7 @@ export function Footer() {
           </svg>
         </a>
         <span>
-          ORB Journey. Painted and built by{' '}
+          Star Fall. A scroll journey by{' '}
           <a
             className="foot-name"
             href="https://shifatmasud-framer.vercel.app/"

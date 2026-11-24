@@ -1,5 +1,5 @@
 import { motion, useTransform, type MotionValue } from 'framer-motion'
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 
 /**
  * The pinned text slot — Surface Tension's `.slot`, ported (love-letter §1.4 / §1.8).
@@ -11,8 +11,8 @@ import type { ReactNode } from 'react'
  *     translate3d(0, (1 - v) * 102%, 0) skewX(2.52° · tl) scaleY(1 / (1 + 0.035 · |tl|))
  *     tl = clamp(1 - v, -1, 1)
  *
- * `v` runs 0 (under the mask) → 1 (in place) → 2 (gone through the top). A beat's arriving lines
- * start after its leaving lines have cleared their masks because the windows do not overlap.
+ * A second, much smaller transform rides the pointer (`--tx` / `--ty`): the type sits a few pixels
+ * away from the scene under the hand, so the page has depth even before the scroll moves.
  */
 
 export type BeatCopy = {
@@ -22,14 +22,15 @@ export type BeatCopy = {
   body: string[]
 }
 
+const COUNT = 8
+
 /** [in-start, in-end, out-start, out-end] per beat, in scroll progress (0 → 1). */
-const WINDOWS: [number, number, number, number][] = [
-  [0, 0, 0.035, 0.105],
-  [0.148, 0.223, 0.272, 0.345],
-  [0.398, 0.473, 0.522, 0.595],
-  [0.648, 0.723, 0.772, 0.845],
-  [0.862, 0.935, 0.958, 0.995],
-]
+const WINDOWS: [number, number, number, number][] = Array.from({ length: COUNT }, (_, i) => {
+  const start = i / COUNT
+  if (i === 0) return [0, 0, 0.041, 0.112] as [number, number, number, number]
+  if (i === COUNT - 1) return [start + 0.012, start + 0.055, 1.4, 1.5] as [number, number, number, number]
+  return [start + 0.012, start + 0.055, start + 0.086, start + 0.118] as [number, number, number, number]
+})
 
 function Line({
   progress,
@@ -42,7 +43,7 @@ function Line({
   index: number
   children: ReactNode
 }) {
-  const shift = index * 0.011
+  const shift = index * 0.0075
   const v = useTransform(
     progress,
     [range[0] + shift, range[1] + shift, range[2] + shift, range[3] + shift],
@@ -68,6 +69,33 @@ function Line({
 }
 
 export function BeatOverlay({ progress, beats }: { progress: MotionValue<number>; beats: BeatCopy[] }) {
+  // the type's own parallax: written to CSS variables, never through React state
+  useEffect(() => {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    let raf = 0
+    let x = 0
+    let y = 0
+    let tx = 0
+    let ty = 0
+    const onMove = (event: PointerEvent) => {
+      x = event.clientX / window.innerWidth - 0.5
+      y = event.clientY / window.innerHeight - 0.5
+    }
+    const tick = () => {
+      tx += (x - tx) * 0.08
+      ty += (y - ty) * 0.08
+      document.documentElement.style.setProperty('--tx', `${(-tx * 14).toFixed(2)}px`)
+      document.documentElement.style.setProperty('--ty', `${(-ty * 10).toFixed(2)}px`)
+      raf = requestAnimationFrame(tick)
+    }
+    window.addEventListener('pointermove', onMove, { passive: true })
+    raf = requestAnimationFrame(tick)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      cancelAnimationFrame(raf)
+    }
+  }, [])
+
   return (
     <div className="slot__beat" aria-live="polite">
       {beats.map((beat, beatIndex) => (
