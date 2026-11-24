@@ -1,0 +1,64 @@
+name: Visual QA (SwiftShader)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: visual-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshots:
+    name: Desktop + mobile capture
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium (Playwright)
+        run: npx playwright install --with-deps chromium
+
+      - name: Build
+        run: npm run build
+
+      - name: Capture screenshots (WebGL2 via ANGLE/SwiftShader)
+        run: npm run qa:visual
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-qa-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summarize QA report
+        if: always()
+        run: |
+          if [ -f artifacts/qa-report.json ]; then
+            node -e '
+              const r = require("./artifacts/qa-report.json");
+              const lines = [`### Visual QA — ${r.errorCount} error(s)`];
+              for (const [name, v] of Object.entries(r.viewports ?? {})) {
+                lines.push(`- **${name}** ${v.viewport.width}x${v.viewport.height} — WebGL2: ${v.gl?.webgl2} — \`${v.gl?.renderer ?? "n/a"}\` — ${v.shots.length} shots`);
+              }
+              if (r.errors?.length) lines.push("", "```", ...r.errors.map(e => `[${e.viewport}] ${e.kind}: ${e.text}`), "```");
+              require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+            '
+          else
+            echo "No qa-report.json was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
