@@ -126,7 +126,20 @@ async function scrollToProgress(page, progress) {
 async function run() {
   await mkdir(OUT, { recursive: true })
   const errors = []
-  const report = { generatedAt: new Date().toISOString(), base: BASE, viewports: {}, errors }
+  const report = { generatedAt: new Date().toISOString(), base: BASE, viewports: {}, errors, skipped: [] }
+  // A CPU rasterizer draws this scene at a few frames a second, so the capture
+  // step itself is the slow part. `QA_BUDGET_MS` keeps the job inside the
+  // workflow's timeout: past the budget the remaining shots are skipped and
+  // named in the report rather than letting the runner kill the whole run.
+  const deadline = Date.now() + Number(process.env.QA_BUDGET_MS ?? 12 * 60_000)
+  const shoot = async (page, name) => {
+    if (Date.now() > deadline) {
+      report.skipped.push(name)
+      return false
+    }
+    await page.screenshot({ path: path.join(OUT, name) })
+    return true
+  }
 
   const preview = startPreview()
   let browser
@@ -146,8 +159,7 @@ async function run() {
         reducedMotion: 'no-preference',
       })
       const page = await context.newPage()
-      // the CPU rasterizer needs a while for a 1440x900 frame of world + water
-      page.setDefaultTimeout(180_000)
+      page.setDefaultTimeout(120_000)
       attachLogging(page, errors, viewport.name)
 
       await page.goto(`${BASE}?qa=1`, { waitUntil: 'load' })
@@ -191,9 +203,9 @@ async function run() {
 
       for (const progress of STOPS) {
         const metrics = await scrollToProgress(page, progress)
-        const file = path.join(OUT, `${viewport.name}-${Math.round(progress * 100)}.png`)
-        await page.screenshot({ path: file, animations: 'allow' })
-        report.viewports[viewport.name].shots.push(path.basename(file))
+        const file = `${viewport.name}-${Math.round(progress * 100)}.png`
+        const written = await shoot(page, file)
+        if (written) report.viewports[viewport.name].shots.push(file)
         report.viewports[viewport.name].stops.push({ progress, ...metrics })
       }
 
@@ -212,8 +224,9 @@ async function run() {
         { steps: 14 },
       )
       await settle(page)
-      await page.screenshot({ path: path.join(OUT, `${viewport.name}-scrub-hover.png`) })
-      report.viewports[viewport.name].shots.push(`${viewport.name}-scrub-hover.png`)
+      if (await shoot(page, `${viewport.name}-scrub-hover.png`)) {
+        report.viewports[viewport.name].shots.push(`${viewport.name}-scrub-hover.png`)
+      }
 
       await page.mouse.wheel(0, -420)
       await settle(page)
@@ -222,15 +235,17 @@ async function run() {
       await page.mouse.move(Math.round(viewport.width * 0.3), Math.round(viewport.height * 0.78), { steps: 10 })
       await settle(page)
       const scrubbed = await page.evaluate(() => Math.round(window.scrollY))
-      await page.screenshot({ path: path.join(OUT, `${viewport.name}-scrub.png`) })
-      report.viewports[viewport.name].shots.push(`${viewport.name}-scrub.png`)
+      if (await shoot(page, `${viewport.name}-scrub.png`)) {
+        report.viewports[viewport.name].shots.push(`${viewport.name}-scrub.png`)
+      }
       report.viewports[viewport.name].scrubScrollY = scrubbed
 
       // The air–water split line, last: the lens is crossing y = -1.6 here, so
       // this is the frame where terrain/water depth order has to be clean.
       const splitMetrics = await scrollToProgress(page, 0.82)
-      await page.screenshot({ path: path.join(OUT, `${viewport.name}-split.png`) })
-      report.viewports[viewport.name].shots.push(`${viewport.name}-split.png`)
+      if (await shoot(page, `${viewport.name}-split.png`)) {
+        report.viewports[viewport.name].shots.push(`${viewport.name}-split.png`)
+      }
       report.viewports[viewport.name].split = splitMetrics
 
       await context.close()
@@ -244,6 +259,9 @@ async function run() {
   await writeFile(path.join(OUT, 'qa-report.json'), `${JSON.stringify(report, null, 2)}\n`)
 
   console.log(`\nORB-Journey visual QA — ${STOPS.length * VIEWPORTS.length + VIEWPORTS.length * 3} screenshots in ${OUT}`)
+  if (report.skipped.length > 0) {
+    console.log(`  budget reached: skipped ${report.skipped.join(', ')}`)
+  }
   for (const [name, data] of Object.entries(report.viewports)) {
     console.log(
       `  ${name}: WebGL2=${data.gl?.webgl2} renderer="${data.gl?.renderer}" glVersion="${data.gl?.version}" canvas=${data.canvas?.width}x${data.canvas?.height}`,

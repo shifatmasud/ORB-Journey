@@ -1,9 +1,10 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { useMotionValueEvent, useScroll } from 'framer-motion'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { Soundscape } from './audio/Soundscape'
 import { createWebGL2Context, describeRenderer, type RendererInfo } from './gl/webgl2'
+import { PostFX, trailRef } from './gl/PostFX'
 import { CameraRig } from './scene/atmosphere/CameraRig'
 import { OrbSlot, WaterSlot, WorldSlot } from './scene/atmosphere/StageSlots'
 import { SkyCloudsGodrays } from './scene/atmosphere/SkyCloudsGodrays'
@@ -35,39 +36,57 @@ declare global {
 const QA_BUFFER = new URLSearchParams(window.location.search).has('qa')
 
 /**
- * The five beats. Copy follows love-letter's register: an eyebrow `NN — The place`, a title of four
- * words or fewer, and one or two quiet sentences.
+ * The eight chapters. Copy follows love-letter's register: an eyebrow `NN — The place`, a title of
+ * four words or fewer, and one or two quiet sentences.
  */
 const BEATS: BeatCopy[] = [
   {
+    id: 'space',
+    eyebrow: '01 — Above the sky',
+    title: ['A small', 'star'],
+    body: ['High above the weather, among the others.', 'It leans out of the dark.'],
+  },
+  {
     id: 'sky',
-    eyebrow: '01 — The sky',
-    title: ['A small', 'light'],
-    body: ['Up where the air is thin and gold.', 'The clouds open. It starts to fall.'],
+    eyebrow: '02 — The clouds',
+    title: ['Down through', 'the gold'],
+    body: ['The air turns warm as it enters.', 'Clouds open around it.'],
   },
   {
-    id: 'meadow',
-    eyebrow: '02 — The meadow',
-    title: ['Down through', 'the green'],
-    body: ['Cloud shade, and then grass.', 'The fall slows. The field leans up.'],
+    id: 'forest',
+    eyebrow: '03 — The forest',
+    title: ['Into the', 'canopy'],
+    body: ['Light comes down in columns.', 'The leaves pass it along.'],
   },
   {
-    id: 'bank',
-    eyebrow: '03 — The bank',
-    title: ['Where the', 'forest ends'],
-    body: ['Pines thin out to reeds.', 'The light comes down to the water.'],
+    id: 'lake',
+    eyebrow: '04 — The lake',
+    title: ['A lake in', 'the meadow'],
+    body: ['Flowers turn their faces up.', 'The water holds the whole sky.'],
   },
   {
-    id: 'seam',
-    eyebrow: '04 — The seam',
-    title: ['One line', 'of air'],
-    body: ['Air above, water below, one seam.', 'It moves when you move.'],
+    id: 'desert',
+    eyebrow: '05 — The desert',
+    title: ['A green', 'thought'],
+    body: ['Sand leans away from the water.', 'Palms keep their own shade.'],
+  },
+  {
+    id: 'ice',
+    eyebrow: '06 — The ice',
+    title: ['Cold', 'still water'],
+    body: ['Moss on black stone.', 'The mountain keeps its winter.'],
+  },
+  {
+    id: 'sea',
+    eyebrow: '07 — The sea',
+    title: ['Out to', 'the blue'],
+    body: ['Palms lean over the sand.', 'Ice keeps its own weather.'],
   },
   {
     id: 'deep',
-    eyebrow: '05 — The deep',
-    title: ['Under', 'the light'],
-    body: ['Kelp, cold blue, one window of sun.', 'It keeps going down into the quiet.'],
+    eyebrow: '08 — The deep',
+    title: ['At rest', 'at last'],
+    body: ['Kelp, cold blue, a sunken quiet.', 'It stays, and the dark turns gold.'],
   },
 ]
 
@@ -118,7 +137,7 @@ export default function App() {
 
   // the soundscape follows the same scroll value as the camera, with the reference's slow constant
   useMotionValueEvent(scrollYProgress, 'change', (value) => {
-    Soundscape.mix(Math.min(4, Math.max(0, value * 4)))
+    Soundscape.mix(Math.min(7, Math.max(0, value * 7)))
   })
 
   useEffect(() => {
@@ -147,6 +166,31 @@ export default function App() {
     return () => observer.disconnect()
   }, [])
 
+  // The cursor trail's brush. Pointer events cover mouse and pen; the finger is read from touch
+  // events as well, because a pointer stream stops the moment the page starts a native scroll.
+  useEffect(() => {
+    const feed = (x: number, y: number) => trailRef.current?.pointer(x, y)
+    const onPointer = (event: PointerEvent) => {
+      if (event.pointerType === 'touch') return
+      feed(event.clientX, event.clientY)
+    }
+    const onTouch = (event: TouchEvent) => {
+      const touch = event.changedTouches[0] || event.touches[0]
+      if (touch) feed(touch.clientX, touch.clientY)
+    }
+    const leave = () => trailRef.current?.release()
+    window.addEventListener('pointermove', onPointer, { passive: true })
+    window.addEventListener('touchstart', onTouch, { passive: true })
+    window.addEventListener('touchmove', onTouch, { passive: true })
+    window.addEventListener('pointerleave', leave)
+    return () => {
+      window.removeEventListener('pointermove', onPointer)
+      window.removeEventListener('touchstart', onTouch)
+      window.removeEventListener('touchmove', onTouch)
+      window.removeEventListener('pointerleave', leave)
+    }
+  }, [])
+
   const onFirstFrame = useCallback(() => setFramed(true), [])
 
   const onLoaderReveal = useCallback(() => {
@@ -166,18 +210,19 @@ export default function App() {
   }, [])
 
   const onStageMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    // the seam answers the pointer: a quiet crystalline ring, panned where the hand is
-    if (journey.u < 2.7) return
+    // the water answers the pointer: a quiet crystalline ring, panned where the hand is
+    if (journey.u < 3.4) return
     const pan = (event.clientX / window.innerWidth - 0.5) * 1.6
     Soundscape.ripple(pan, 0.55)
   }, [])
 
   const onStageWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    if (journey.u < 2.7) return
+    if (journey.u < 3.4) return
     Soundscape.ripple((Math.random() * 2 - 1) * 0.7, 0.35 + Math.min(0.6, Math.abs(event.deltaY) / 900))
   }, [])
 
   const dpr = capDpr()
+  const bloom = useMemo(() => (TIER === 'low' ? 0.34 : 0.46), [])
 
   return (
     <div className="app" data-testid="app">
@@ -188,7 +233,7 @@ export default function App() {
           <div className="canvas-layer">
             <Canvas
               dpr={dpr}
-              camera={{ position: [0, 92, 34], fov: 42, near: 0.5, far: 1600 }}
+              camera={{ position: [0, 205, 58], fov: 38, near: 0.15, far: 4000 }}
               gl={(canvas: HTMLCanvasElement | OffscreenCanvas) => {
                 const element = canvas as HTMLCanvasElement
                 return new THREE.WebGLRenderer({
@@ -209,10 +254,11 @@ export default function App() {
               <OrbSlot progress={scrollYProgress} />
               <WorldSlot progress={scrollYProgress} />
               <WaterSlot progress={scrollYProgress} />
-              <ambientLight intensity={0.55} />
+              <ambientLight intensity={0.6} />
               <directionalLight position={[6, 14, 8]} intensity={1.1} color="#FFF1D8" />
               <ReadyProbe onFirstFrame={onFirstFrame} />
               <ToneProbe onChange={setOnDark} />
+              <PostFX bloom={bloom} exposure={1.24} />
             </Canvas>
           </div>
           <div className="vig" aria-hidden="true" />

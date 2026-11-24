@@ -1,12 +1,15 @@
 import * as THREE from 'three'
 
 /**
- * The five weather states of the journey and the scroll value they are sampled with.
+ * The eight chapters of The Fallen Star, and the one scroll value they are sampled with.
  *
- * One table, sampled once per frame into a preallocated object, so the sky dome, the cloud layer,
- * the god-rays and the weather all read the same numbers (house rule 7: one clock, one value).
- * Colours are lifted from `love-letter/notes/style.md`: warm near-blacks, cream highlights, far
- * layers lighter and bluer, and no sun disc anywhere — the gradient carries the light.
+ * One table, sampled once per frame into a preallocated object, so the sky dome, the clouds, the
+ * god-rays, the fog, the water and the weather all read the same numbers (one clock, one value).
+ *
+ * Story: the star begins in space above Earth (1), falls into the morning sky (2), crosses the
+ * wildflower hills (3), skims the meadow (4), passes through the forest canopy (5), comes out over
+ * the reeds and the mist (6), touches the lake and holds the seam (7), and comes to rest on the
+ * deep ocean floor (8).
  */
 
 export type SkyState = {
@@ -22,7 +25,7 @@ export type SkyState = {
   cloudRim: string
   sunDir: [number, number, number]
   sunPower: number
-  /** haze thickness near the horizon */
+  /** haze thickness near the horizon (0..1) */
   mist: number
   rain: number
   snow: number
@@ -34,118 +37,214 @@ export type SkyState = {
   window: number
   /** 0 = light sky (ink nav), 1 = dark sky (cream nav) */
   tone: number
+  /** star field in the dome (1 above the atmosphere) */
+  stars: number
+  /** milky-way / nebula veil */
+  nebula: number
+  /** exponential aerial-perspective density for the world (1 = the morning's thick air) */
+  fog: number
 }
 
 export const SKY_STATES: SkyState[] = [
   {
-    // 01 · clouds & sky — golden morning mist, the sun still low on the left
-    name: 'golden morning',
-    zenith: '#5E7FA8',
-    mid: '#A9B7BE',
-    horizon: '#F2DDBB',
-    sun: '#FFE7B5',
-    haze: '#EFD9BC',
-    land: '#C2C4B2',
-    cloudLit: '#FFF3DD',
-    cloudShade: '#D8C3BC',
-    cloudRim: '#FFEFD0',
-    sunDir: [-0.62, 0.4, -0.68],
-    sunPower: 1,
-    mist: 0.72,
+    // 01 · above the world — space, stars, Earth's atmosphere glowing along the limb
+    name: 'above the world',
+    zenith: '#04060d',
+    mid: '#0a1730',
+    horizon: '#2f5f86',
+    sun: '#ffe6b4',
+    haze: '#8fb6d8',
+    land: '#0a1622',
+    cloudLit: '#f3e6cf',
+    cloudShade: '#5b718b',
+    cloudRim: '#ffe9c4',
+    sunDir: [-0.58, 0.26, -0.77],
+    sunPower: 1.25,
+    mist: 0.14,
     rain: 0,
     snow: 0,
     sea: 1,
-    shaft: 0.5,
-    window: 0,
-    tone: 0,
-  },
-  {
-    // 02 · falling into the meadow — sunlit breeze, high sun, clouds rushing up past the lens
-    name: 'sunlit breeze',
-    zenith: '#4C79AE',
-    mid: '#93B7CC',
-    horizon: '#E8F0EE',
-    sun: '#FFF6DC',
-    haze: '#DDE8E6',
-    land: '#B6C4BA',
-    cloudLit: '#FFFFFF',
-    cloudShade: '#CDCFD9',
-    cloudRim: '#FFF8E8',
-    sunDir: [0.34, 0.55, -0.76],
-    sunPower: 1.05,
-    mist: 0.34,
-    rain: 0,
-    snow: 0,
-    sea: 0.8,
-    shaft: 0.72,
-    window: 0,
-    tone: 0,
-  },
-  {
-    // 03 · forest bank & lakeside — soft rain, an overcast that keeps the greens
-    name: 'soft rain',
-    zenith: '#5E6A79',
-    mid: '#8A939C',
-    horizon: '#C2C4C2',
-    sun: '#EDE7DA',
-    haze: '#B9BEBC',
-    land: '#9EA8A2',
-    cloudLit: '#E8E9E6',
-    cloudShade: '#8A8F98',
-    cloudRim: '#D8DBD8',
-    sunDir: [0.15, 0.34, -0.93],
-    sunPower: 0.42,
-    mist: 0.56,
-    rain: 1,
-    snow: 0,
-    sea: 0.45,
-    shaft: 0.22,
-    window: 0,
-    tone: 0,
-  },
-  {
-    // 04 · the air–water split line — a low sun, still air, the water already dark below
-    name: 'twilight seam',
-    zenith: '#24304A',
-    mid: '#5F5566',
-    horizon: '#DCA97E',
-    sun: '#FFCE96',
-    haze: '#C89A78',
-    land: '#2F4142',
-    cloudLit: '#F0D2B4',
-    cloudShade: '#7A6672',
-    cloudRim: '#FFD9A8',
-    sunDir: [-0.42, 0.1, -0.9],
-    sunPower: 0.5,
-    mist: 0.7,
-    rain: 0,
-    snow: 0.15,
-    sea: 0.12,
-    shaft: 0.5,
+    shaft: 1.1,
     window: 0,
     tone: 1,
+    stars: 1,
+    nebula: 1,
+    fog: 0.25,
   },
   {
-    // 05 · the dive — bright window overhead, deep teal everywhere else
-    name: 'the dive',
-    zenith: '#2E7F88',
-    mid: '#11505A',
-    horizon: '#062028',
-    sun: '#EAFBF4',
-    haze: '#2E7E85',
-    land: '#082830',
-    cloudLit: '#63AEB4',
-    cloudShade: '#0C3A45',
-    cloudRim: '#A8E3DC',
-    sunDir: [0.05, 1, -0.12],
+    // 02 · falling into the morning sky — golden hour, cloud tops lit from the right
+    name: 'morning sky',
+    zenith: '#4d7bab',
+    mid: '#a5c0d2',
+    horizon: '#fbdfb2',
+    sun: '#ffe9c2',
+    haze: '#f6dcb8',
+    land: '#b9b7a6',
+    cloudLit: '#fff4e2',
+    cloudShade: '#c9b3ab',
+    cloudRim: '#ffeecb',
+    sunDir: [0.42, 0.28, -0.86],
+    sunPower: 1.15,
+    mist: 0.58,
+    rain: 0,
+    snow: 0,
+    sea: 0.92,
+    shaft: 0.85,
+    window: 0,
+    tone: 0,
+    stars: 0.2,
+    nebula: 0.18,
+    fog: 1.0,
+  },
+  {
+    // 03 · the forest canopy — sun through leaves, green shade, warm shafts
+    name: 'the canopy',
+    zenith: '#9db28f',
+    mid: '#cfd2ad',
+    horizon: '#f7e9c4',
+    sun: '#fff2ce',
+    haze: '#e6dcbc',
+    land: '#46583a',
+    cloudLit: '#fff4dc',
+    cloudShade: '#b9b6a4',
+    cloudRim: '#ffe9bc',
+    sunDir: [0.36, 0.6, -0.72],
+    sunPower: 0.9,
+    mist: 0.2,
+    rain: 0,
+    snow: 0,
+    sea: 0.1,
+    shaft: 0.95,
+    window: 0,
+    tone: 1,
+    stars: 0,
+    nebula: 0,
+    fog: 0.9,
+  },
+  {
+    // 04 · the lake in the meadow — a calm bright morning, wildflowers lit from the side
+    name: 'the lake',
+    zenith: '#4f86c0',
+    mid: '#a9cbdb',
+    horizon: '#eef0df',
+    sun: '#fff7e0',
+    sunPower: 1.1,
+    haze: '#e6ecdf',
+    land: '#b2c4ab',
+    cloudLit: '#ffffff',
+    cloudShade: '#c9cdd6',
+    cloudRim: '#fffbee',
+    sunDir: [0.45, 0.42, -0.79],
+    mist: 0.36,
+    rain: 0,
+    snow: 0,
+    sea: 0.4,
+    shaft: 0.7,
+    window: 0,
+    tone: 0,
+    stars: 0,
+    nebula: 0,
+    fog: 0.9,
+  },
+  {
+    // 05 · the desert oasis — hot bright morning over warm dunes and a turquoise pond
+    name: 'the desert',
+    zenith: '#4a86c8',
+    mid: '#bdd3da',
+    horizon: '#f7e0b2',
+    sun: '#fff3d2',
+    haze: '#efd8b4',
+    land: '#c9a874',
+    cloudLit: '#fff6e6',
+    cloudShade: '#cdbfae',
+    cloudRim: '#fff0d2',
+    sunDir: [0.52, 0.55, -0.66],
+    sunPower: 1.2,
+    mist: 0.26,
+    rain: 0,
+    snow: 0,
+    sea: 0.16,
+    shaft: 0.62,
+    window: 0,
+    tone: 0,
+    stars: 0,
+    nebula: 0,
+    fog: 0.9,
+  },
+  {
+    // 06 · the Icelandic pond — a cool overcast morning, mist on black stone
+    name: 'the ice',
+    zenith: '#8fb4cf',
+    mid: '#d2e2e8',
+    horizon: '#fae4bd',
+    sun: '#fff0c8',
+    haze: '#eae4d4',
+    land: '#dfe8ec',
+    cloudLit: '#fdf7ec',
+    cloudShade: '#b6c6cd',
+    cloudRim: '#fff1d4',
+    sunDir: [0.42, 0.36, -0.83],
+    sunPower: 1.05,
+    mist: 0.62,
+    rain: 0,
+    snow: 0,
+    sea: 0.12,
+    shaft: 0.24,
+    window: 0,
+    tone: 0,
+    stars: 0,
+    nebula: 0,
+    fog: 1.0,
+  },
+  {
+    // 07 · the open sea — a high bright morning, turquoise water, icebergs, palms
+    name: 'the open sea',
+    zenith: '#3f7cbb',
+    mid: '#9cc6dc',
+    horizon: '#eaf2ee',
+    sun: '#fff8e6',
+    haze: '#dce9e6',
+    land: '#9fb3a8',
+    cloudLit: '#ffffff',
+    cloudShade: '#c4cfd8',
+    cloudRim: '#fffdf2',
+    sunDir: [0.3, 0.62, -0.72],
+    sunPower: 1.2,
+    mist: 0.28,
+    rain: 0,
+    snow: 0,
+    sea: 0.2,
+    shaft: 0.6,
+    window: 0,
+    tone: 0,
+    stars: 0,
+    nebula: 0,
+    fog: 0.85,
+  },
+  {
+    // 08 · under the deep sea — the star at rest on the ocean floor
+    name: 'the deep',
+    zenith: '#3b8792',
+    mid: '#12525e',
+    horizon: '#0a2a32',
+    sun: '#eafbf4',
+    haze: '#1b5560',
+    land: '#07222a',
+    cloudLit: '#63aeb4',
+    cloudShade: '#0c3a45',
+    cloudRim: '#a8e3dc',
+    sunDir: [0.04, 1, -0.1],
     sunPower: 1.0,
-    mist: 0.22,
+    mist: 0.2,
     rain: 0,
     snow: 1,
     sea: 0,
-    shaft: 0.85,
+    shaft: 0.9,
     window: 1,
     tone: 1,
+    stars: 0,
+    nebula: 0,
+    fog: 1.0,
   },
 ]
 
@@ -168,6 +267,9 @@ export type Atmosphere = {
   shaft: number
   window: number
   tone: number
+  stars: number
+  nebula: number
+  fog: number
   /** the sky's own brightness, for the nav tone switch */
   luma: number
   name: string
@@ -196,6 +298,9 @@ export function createAtmosphere(): Atmosphere {
     shaft: first.shaft,
     window: first.window,
     tone: first.tone,
+    stars: first.stars,
+    nebula: first.nebula,
+    fog: first.fog,
     luma: 0.5,
     name: first.name,
   }
@@ -207,7 +312,7 @@ const smooth = (f: number) => f * f * (3 - 2 * f)
 /** One shared sample of the current weather, rewritten every frame by whichever layer runs first. */
 export const atmosphere: Atmosphere = createAtmosphere()
 
-/** u: 0 → 4 across the five beats. */
+/** u: 0 → 7 across the eight chapters. */
 export function sampleAtmosphere(u: number, out: Atmosphere = atmosphere) {
   const clamped = Math.min(SKY_STATES.length - 1, Math.max(0, u))
   const i = Math.min(SKY_STATES.length - 2, Math.floor(clamped))
@@ -243,6 +348,9 @@ export function sampleAtmosphere(u: number, out: Atmosphere = atmosphere) {
   out.shaft = mix(a.shaft, b.shaft, f)
   out.window = mix(a.window, b.window, f)
   out.tone = mix(a.tone, b.tone, f)
+  out.stars = mix(a.stars, b.stars, f)
+  out.nebula = mix(a.nebula, b.nebula, f)
+  out.fog = mix(a.fog, b.fog, f)
   out.name = f < 0.5 ? a.name : b.name
   out.luma = 0.2126 * out.horizon.r + 0.7152 * out.horizon.g + 0.0722 * out.horizon.b
 }
@@ -252,10 +360,13 @@ export function sampleAtmosphere(u: number, out: Atmosphere = atmosphere) {
  * Keeping it out of React avoids a re-render per scroll frame.
  */
 export const journey = {
-  /** 0 → 4 across the five beats */
+  /** 0 → 7 across the eight chapters */
   u: 0,
   /** 0 → 1 document scroll */
   p: 0,
   beat: 0,
   time: 0,
+  /** the pointer in -1..1, mirrored for layers that want parallax */
+  px: 0,
+  py: 0,
 }

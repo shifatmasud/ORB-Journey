@@ -352,6 +352,7 @@ header.on-dark {
 
 .slot__copy {
   position: absolute;
+  transform: translate3d(var(--tx, 0px), var(--ty, 0px), 0);
   left: 0;
   right: 0;
   bottom: 0;
